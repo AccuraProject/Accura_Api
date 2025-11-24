@@ -44,6 +44,7 @@ Tras obtener la respuesta:
 Las dependencias requieren analizar `reglas especifica` para detectar:
 - **Etiquetas condicionantes vs. dependientes**, usando alias de tipo (`Texto`, `Lista`, etc.) para separar configuraciones anidadas.【F:app/infrastructure/openai_client.py†L191-L405】
 - **Hojas finales** que se usarán como encabezados, descartando duplicados y normalizando acentos o mayúsculas.【F:app/infrastructure/openai_client.py†L191-L405】【F:app/infrastructure/openai_client.py†L867-L905】
+- **Construcción del Header** respetando `Header rule`: si la regla dependiente solo lista catálogos simples, el encabezado replica la pareja condicionante/dependiente; cuando el dependiente tiene restricciones internas (longitudes, formatos, etc.), el header combina el campo condicionante con los nombres de esas propiedades y omite el nombre de la columna dependiente.【F:app/infrastructure/openai_client.py†L287-L366】【F:app/infrastructure/openai_client.py†L848-L906】
 - **Remapeo de catálogos** cuando la dependencia incluye listas internas, asegurando que el valor dependiente se vincula al header correcto en el resumen que ve el usuario.【F:app/interfaces/api/routes/assistant.py†L112-L253】
 
 ## 8. Integración con plantillas y persistencia

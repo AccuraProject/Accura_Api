@@ -22,7 +22,7 @@ from app.infrastructure.openai_client import (
     StructuredChatService,
     _deduplicate_headers,
     _extract_header_entries,
-    _infer_dependency_headers,
+    _generate_dependency_headers,
     _infer_header_rule,
 )
 from app.interfaces.api.dependencies import (
@@ -88,9 +88,9 @@ def _build_rule_summary(rule_id: int, definition: Mapping[str, Any], type_label:
         _extract_header_entries(definition.get("Header"))
     )
     if normalized_type == "dependencia":
-        inferred_headers = _infer_dependency_headers(definition)
+        inferred_headers = _generate_dependency_headers(definition)
         if inferred_headers:
-            header_entries = _deduplicate_headers(inferred_headers)
+            header_entries = inferred_headers
     if header_entries:
         summary["Header"] = header_entries
     elif "Header" in definition:
