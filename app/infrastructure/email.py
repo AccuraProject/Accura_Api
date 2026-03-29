@@ -7,7 +7,7 @@ import logging
 from typing import Any
 
 from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
+from sendgrid.helpers.mail import Mail, From, ReplyTo
 
 from app.config import get_settings
 
@@ -110,12 +110,13 @@ def send_email(subject: str, html_content: str, recipient: str) -> bool:
         return False
 
     message = Mail(
-        from_email=settings.sendgrid_sender,
+        from_email=From(settings.sendgrid_sender, "Accura System"),  # "Accura System" ayuda
         to_emails=recipient,
         subject=subject,
         html_content=html_content,
     )
-
+    # Esto permite que te respondan a tu Gmail personal
+    message.reply_to = ReplyTo("deyvidjosephg@gmail.com", "Soporte Deyvid")
     try:
         client = SendGridAPIClient(settings.sendgrid_api_key)
         response = client.send(message)
