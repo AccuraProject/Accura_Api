@@ -22,7 +22,7 @@ from app.infrastructure.openai_client import (
     StructuredChatService,
     _deduplicate_headers,
     _extract_header_entries,
-    _infer_dependency_headers,
+    _generate_dependency_headers,
     _infer_header_rule,
 )
 from app.interfaces.api.dependencies import (
@@ -88,9 +88,9 @@ def _build_rule_summary(rule_id: int, definition: Mapping[str, Any], type_label:
         _extract_header_entries(definition.get("Header"))
     )
     if normalized_type == "dependencia":
-        inferred_headers = _infer_dependency_headers(definition)
+        inferred_headers = _generate_dependency_headers(definition)
         if inferred_headers:
-            header_entries = _deduplicate_headers(inferred_headers)
+            header_entries = inferred_headers
     if header_entries:
         summary["Header"] = header_entries
     elif "Header" in definition:
@@ -253,6 +253,56 @@ def _remap_dependency_list_specifics(
     return updated_block
 
 
+def _extract_dependency_header_from_specific(rule_block: Mapping[str, Any]) -> list[str]:
+    """Derive header labels from the first dependency-specific block."""
+
+    specifics = rule_block.get("reglas especifica")
+    if not isinstance(specifics, Sequence) or not specifics:
+        return []
+
+    first_entry = specifics[0]
+    if not isinstance(first_entry, Mapping):
+        return []
+
+    headers: list[str] = []
+    for key, value in first_entry.items():
+        if not isinstance(key, str) or not key.strip():
+            continue
+
+        if isinstance(value, Mapping):
+            for nested_key in value.keys():
+                if isinstance(nested_key, str) and nested_key.strip():
+                    headers.append(nested_key.strip())
+            continue
+
+        headers.append(key.strip())
+
+    return _deduplicate_headers(headers)
+
+
+def _sanitize_dependency_header(raw_response: Any) -> Any:
+    """Replace dependency headers with the labels inferred from specifics."""
+
+    if not isinstance(raw_response, Mapping):
+        return raw_response
+
+    tipo_de_dato = raw_response.get("Tipo de dato") or raw_response.get("tipo_de_dato")
+    if not isinstance(tipo_de_dato, str) or _normalize_label(tipo_de_dato) != "dependencia":
+        return raw_response
+
+    rule_block = raw_response.get("Regla") or raw_response.get("regla")
+    if not isinstance(rule_block, Mapping):
+        return raw_response
+
+    inferred_headers = _extract_dependency_header_from_specific(rule_block)
+    if not inferred_headers:
+        return raw_response
+
+    sanitized = dict(raw_response)
+    sanitized["Header"] = inferred_headers
+    return sanitized
+
+
 def _build_rules_catalog(rules: Sequence[Rule]) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
@@ -327,6 +377,7 @@ def analyze_message(
             recent_rules=serialized_rules or None,
         )
         logger.debug("Respuesta sin validar del asistente: %s", raw_response)
+        raw_response = _sanitize_dependency_header(raw_response)
     except OffTopicMessageError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

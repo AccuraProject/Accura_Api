@@ -347,6 +347,15 @@ class AssistantMessageResponse(BaseModel):
             dependent_label_reference: str | None = None
             normalized_dependent_reference: str | None = None
             expected_headers: set[str] = set()
+            property_dependency_types = {
+                "texto",
+                "numero",
+                "documento",
+                "telefono",
+                "correo",
+                "fecha",
+            }
+            include_dependent_target_in_header = True
 
             for entrada in reglas_especifica:
                 if not isinstance(entrada, dict) or len(entrada) < 2:
@@ -537,6 +546,8 @@ class AssistantMessageResponse(BaseModel):
                             )
                             if canonical_header is not None:
                                 expected_headers.add(canonical_header)
+                        if normalized_clave in property_dependency_types:
+                            include_dependent_target_in_header = False
                         continue
 
                     if normalized_clave in allowed_types:
@@ -613,7 +624,8 @@ class AssistantMessageResponse(BaseModel):
             if dependent_target_label is None:
                 dependent_target_label = dependent_label_reference
 
-            expected_headers.add(dependent_target_label)
+            if include_dependent_target_in_header:
+                expected_headers.add(dependent_target_label)
 
             remapped_specifics: list[Any] = []
             normalized_target_label = _normalize_label(dependent_target_label)
