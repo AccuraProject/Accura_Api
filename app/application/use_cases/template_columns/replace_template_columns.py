@@ -26,7 +26,12 @@ def replace_template_columns(
     columns: Sequence[NewTemplateColumnData],
     actor_id: int | None = None,
 ) -> list[TemplateColumn]:
-    """Replace all columns of a template with the provided definitions."""
+    """Replace all columns of a template with the provided definitions.
+
+    When ``columns`` is empty, preserve the current columns instead of deleting
+    them. This avoids accidental data loss when the client saves template
+    metadata without persisting the column editor state.
+    """
 
     column_repository = TemplateColumnRepository(session)
     template_repository = TemplateRepository(session)
@@ -39,6 +44,9 @@ def replace_template_columns(
         raise ValueError("No se pueden modificar las columnas de una plantilla publicada")
 
     existing_columns = list(column_repository.list_by_template(template_id))
+    if not columns:
+        return existing_columns
+
     for column in existing_columns:
         column_repository.delete(column.id, deleted_by=actor_id)
 
