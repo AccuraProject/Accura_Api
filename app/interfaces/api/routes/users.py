@@ -174,13 +174,11 @@ def update_user(
                 detail="El cliente debe proporcionar su contraseña para actualizar sus datos",
             )
 
-    name = update_data.get("name", target_user.name)
     email = update_data.get("email")
     email_changed = email is not None and email != target_user.email
     if email is not None and not email_changed:
         email = None
     must_change_password: bool | None = None
-    is_active = update_data["is_active"] if "is_active" in update_data else target_user.is_active
     role_id = update_data.get("role_id") if "role_id" in update_data else None
     requested_password = update_data.get("password")
 
@@ -202,17 +200,27 @@ def update_user(
     elif requested_password is not None:
         must_change_password = False
 
+    update_payload = {
+        "user_id": user_id,
+        "updated_by": current_user.id,
+    }
+    if "name" in update_data:
+        update_payload["name"] = update_data["name"]
+    if email is not None:
+        update_payload["email"] = email
+    if must_change_password is not None:
+        update_payload["must_change_password"] = must_change_password
+    if "is_active" in update_data:
+        update_payload["is_active"] = update_data["is_active"]
+    if role_id is not None:
+        update_payload["role_id"] = role_id
+    if password is not None:
+        update_payload["password"] = password
+
     try:
         user = update_user_uc(
             db,
-            user_id=user_id,
-            name=name,
-            email=email,
-            must_change_password=must_change_password,
-            is_active=is_active,
-            role_id=role_id,
-            password=password,
-            updated_by=current_user.id,
+            **update_payload,
         )
     except ValueError as exc:
         status_code = status.HTTP_400_BAD_REQUEST
@@ -226,6 +234,11 @@ def update_user(
         is_admin=is_admin,
         acting_on_self=acting_on_self,
     )
+    if not user.is_active:
+        notification_decision = type(notification_decision)(
+            should_send=False,
+            include_password=False,
+        )
     if notification_decision.should_send:
         password_for_email = (
             password_for_notification if notification_decision.include_password else None

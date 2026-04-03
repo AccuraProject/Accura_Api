@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.application.use_cases.users import (
     AuthenticationStatus,
     authenticate_user,
+    get_user as get_user_uc,
     record_login,
     reset_password_by_email,
 )
@@ -32,6 +33,7 @@ from app.interfaces.api.schemas import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
 logger = logging.getLogger(__name__)
+_IMPERSONATION_TOKEN_EXPIRE_SECONDS = 60 * 60
 
 _PASSWORD_RESET_MESSAGE = (
     "Si el correo está registrado, recibirás un mensaje con una contraseña temporal."
@@ -84,6 +86,61 @@ def login_for_access_token(
         "token_type": "bearer",
         "role": user.role.alias,
         "must_change_password": must_change_password,
+    }
+
+
+@router.post("/impersonate/{user_id}", response_model=Token)
+def impersonate_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Genera un token temporal para actuar como otro usuario."""
+
+    try:
+        target_user = get_user_uc(db, user_id, include_inactive=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    if not target_user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No se puede impersonar un usuario inactivo",
+        )
+
+    access_token_expires = timedelta(seconds=_IMPERSONATION_TOKEN_EXPIRE_SECONDS)
+    password_signature = sha256(
+        f"{target_user.password}:{int(target_user.is_active)}".encode()
+    ).hexdigest()
+    access_token = create_access_token(
+        data={
+            "sub": target_user.email,
+            "role": target_user.role.alias,
+            "pwd_sig": password_signature,
+            "impersonation": True,
+            "impersonated_by_user_id": current_user.id,
+            "impersonated_user_id": target_user.id,
+        },
+        expires_delta=access_token_expires,
+    )
+
+    logger.info(
+        "Impersonation started by admin_id=%s admin_email=%s target_user_id=%s target_email=%s",
+        current_user.id,
+        current_user.email,
+        target_user.id,
+        target_user.email,
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "role": target_user.role.alias,
+        "must_change_password": False,
+        "impersonation": True,
+        "impersonated_by_user_id": current_user.id,
+        "impersonated_user_id": target_user.id,
+        "expires_in_seconds": _IMPERSONATION_TOKEN_EXPIRE_SECONDS,
     }
 
 
