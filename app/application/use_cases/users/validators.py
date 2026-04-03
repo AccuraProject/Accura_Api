@@ -4,18 +4,20 @@
 GMAIL_DOMAIN = "gmail.com"
 
 
-def ensure_valid_gmail(email: str) -> str:
-    """Return a normalized Gmail address or raise ``ValueError``."""
+def ensure_valid_email(email: str) -> str:
+    """Return a normalized email address or raise ``ValueError``."""
 
     normalized = email.strip()
+
+    # Validamos que tenga exactamente un arroba
     if normalized.count("@") != 1:
-        raise ValueError("El correo electrónico debe ser una cuenta de Gmail válida")
+        raise ValueError("El correo electrónico debe tener un formato válido")
 
     local_part, domain = normalized.split("@", 1)
-    if not local_part:
-        raise ValueError("El correo electrónico debe ser una cuenta de Gmail válida")
 
-    if domain.lower() != GMAIL_DOMAIN:
-        raise ValueError("El correo electrónico debe ser una cuenta de Gmail válida")
+    # Validamos que tanto la parte local como el dominio no estén vacíos
+    if not local_part or not domain:
+        raise ValueError("El correo electrónico debe tener un formato válido")
 
-    return f"{local_part.lower()}@{GMAIL_DOMAIN}"
+    # Retornamos el correo normalizado (minúsculas)
+    return f"{local_part.lower()}@{domain.lower()}"
