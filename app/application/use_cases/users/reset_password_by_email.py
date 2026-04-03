@@ -9,7 +9,7 @@ from app.infrastructure.repositories import UserRepository
 from app.infrastructure.security import get_password_hash, generate_secure_password
 from app.utils import now_in_app_timezone
 
-from .validators import ensure_valid_gmail
+from .validators import ensure_valid_email
 
 
 def reset_password_by_email(session: Session, *, email: str) -> tuple[User, str]:
@@ -20,7 +20,7 @@ def reset_password_by_email(session: Session, *, email: str) -> tuple[User, str]
     change the password on next login.
     """
 
-    normalized_email = ensure_valid_gmail(email)
+    normalized_email = ensure_valid_email(email)
     repository = UserRepository(session)
 
     user = repository.get_by_email(normalized_email)

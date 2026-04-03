@@ -6,7 +6,7 @@ from app.domain.entities import User
 from app.infrastructure.repositories import RoleRepository, UserRepository
 from app.infrastructure.security import get_password_hash
 from app.utils import now_in_app_timezone
-from .validators import ensure_valid_gmail
+from .validators import ensure_valid_email
 
 
 def create_user(
@@ -23,7 +23,7 @@ def create_user(
     repository = UserRepository(session)
     role_repository = RoleRepository(session)
 
-    normalized_email = ensure_valid_gmail(email)
+    normalized_email = ensure_valid_email(email)
 
     existing_user = repository.get_by_email(normalized_email)
     if existing_user:

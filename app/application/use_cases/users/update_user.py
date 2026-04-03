@@ -8,7 +8,7 @@ from app.domain.entities import User
 from app.infrastructure.repositories import RoleRepository, UserRepository
 from app.infrastructure.security import get_password_hash
 from app.utils import now_in_app_timezone
-from .validators import ensure_valid_gmail
+from .validators import ensure_valid_email
 
 
 def update_user(
@@ -33,7 +33,7 @@ def update_user(
 
     new_email = current_user.email
     if email is not None and email != current_user.email:
-        normalized_email = ensure_valid_gmail(email)
+        normalized_email = ensure_valid_email(email)
         existing_with_email = repository.get_by_email(normalized_email)
         if existing_with_email and existing_with_email.id != user_id:
             raise ValueError("El correo electrónico ya está registrado")
