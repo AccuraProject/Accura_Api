@@ -12,15 +12,19 @@ from typing import Any
 from app.domain.entities import TemplateColumn
 from app.infrastructure.repositories import RuleRepository
 
-_RULE_TYPES_REQUIRING_HEADER_FIELD = {"lista compleja"}
-_RULE_TYPES_REQUIRING_COLUMN_HEADER = {"lista compleja"}
+_RULE_TYPES_REQUIRING_HEADER_FIELD = {"lista compleja", "lista completa"}
+_RULE_TYPES_REQUIRING_COLUMN_HEADER = {"lista compleja", "lista completa", "dependencia"}
 _RULE_TYPES_WITH_REQUIRED_HEADERS = {
     "lista compleja",
+    "lista completa",
+    "dependencia",
     "validacion conjunta",
     "duplicados",
 }
 _HEADER_ENFORCEMENT_RULE_TYPES = {
     "lista compleja",
+    "lista completa",
+    "dependencia",
     "validacion conjunta",
     "duplicados",
 }
@@ -384,7 +388,6 @@ def _validate_column_headers_for_rule(
     allows_column_header = False
     requires_column_header = False
     skip_header_enforcement = True
-    dependency_rule_present = False
     column_type = _normalize_type_label(column.data_type)
     header_rules_by_type: dict[str, list[str]] = {}
     rule_names_by_type: dict[str, str] = {}
@@ -414,12 +417,19 @@ def _validate_column_headers_for_rule(
                     rule_type, _resolve_rule_name(definition, column)
                 )
 
+        if rule_type in _RULE_TYPES_REQUIRING_COLUMN_HEADER and not header_rule_values:
+            raise ValueError(
+                "La regla '"
+                + _resolve_rule_name(definition, column)
+                + "' debe definir todos sus 'Header rule' para poder asignarse a columnas."
+            )
+
         if rule_type == "duplicados":
             _validate_duplicate_fields(definition, column, labels)
             continue
         if rule_type == "dependencia":
             allows_column_header = True
-            dependency_rule_present = True
+            requires_column_header = True
             continue
         if rule_type == "validacion conjunta":
             allows_column_header = True
@@ -461,12 +471,16 @@ def _validate_column_headers_for_rule(
 
     if header_values and not allows_column_header:
         raise ValueError(
-            f"La columna '{column.name}' no admite headers para la regla seleccionada."
+            f"La columna '{column.name}' no admite 'header rule' para la regla seleccionada."
         )
 
     if requires_column_header and not header_values:
         raise ValueError(
-            f"La columna '{column.name}' debe definir headers para la regla asignada."
+            "La columna '"
+            + column.name
+            + "' debe indicar su 'header rule' para la regla '"
+            + rule_names_by_type.get(column_type, column.name)
+            + "'."
         )
 
     required_headers = header_rules_by_type.get(column_type, [])
@@ -484,12 +498,13 @@ def _validate_column_headers_for_rule(
             rule_name = rule_names_by_type.get(column_type, column.name)
             invalid_str = ", ".join(sorted(set(invalid_assignments)))
             raise ValueError(
-                "Los headers configurados para la columna '"
+                "Los 'header rule' configurados para la columna '"
                 + column.name
                 + "' deben corresponder a los valores permitidos por la regla '"
                 + rule_name
-                + "': "
+                + "'. Valores no permitidos: "
                 + invalid_str
+                + "."
             )
 
         missing_columns = [
@@ -503,7 +518,7 @@ def _validate_column_headers_for_rule(
             raise ValueError(
                 "La regla '"
                 + rule_name
-                + "' requiere que la plantilla incluya las columnas "
+                + "' requiere que la plantilla incluya las columnas relacionadas en sus 'Header rule': "
                 + missing_str
                 + "."
             )
@@ -517,7 +532,7 @@ def _validate_column_headers_for_rule(
         if missing_headers:
             missing_str = ", ".join(sorted(set(missing_headers)))
             raise ValueError(
-                f"Los headers configurados para la columna '{column.name}' requieren que la plantilla incluya las columnas {missing_str}."
+                f"Los 'header rule' configurados para la columna '{column.name}' requieren que la plantilla incluya las columnas {missing_str}."
             )
 
     rule_name = rule_names_by_type.get(column_type, column.name)
@@ -561,7 +576,7 @@ def ensure_rule_header_dependencies(
             header_values = list(headers) if headers else []
             if len(header_values) > 1:
                 raise ValueError(
-                    f"La columna '{column.name}' solo puede definir un header por regla."
+                    f"La columna '{column.name}' solo puede definir un 'header rule' por cada regla asignada."
                 )
 
             normalized_header_values = {
@@ -614,18 +629,19 @@ def ensure_rule_header_dependencies(
             for normalized, original in normalized_header_values.items():
                 if expected_headers and normalized not in expected_headers:
                     raise ValueError(
-                        "Los headers configurados para la columna '"
+                        "Los 'header rule' configurados para la columna '"
                         + column.name
                         + "' deben corresponder a los valores permitidos por la regla '"
                         + result.rule_name
-                        + "': "
+                        + "'. Valor recibido: "
                         + original
+                        + "."
                     )
 
                 previous_column = assignments.get(normalized)
                 if previous_column and previous_column != column.name:
                     raise ValueError(
-                        "El header '"
+                        "El 'header rule' '"
                         + original
                         + "' de la regla '"
                         + result.rule_name
@@ -652,7 +668,7 @@ def ensure_rule_header_dependencies(
             raise ValueError(
                 "La regla '"
                 + result.rule_name
-                + "' requiere asignar los headers "
+                + "' requiere que se asignen todos sus 'header rule'. Faltan: "
                 + missing_str
                 + "."
             )

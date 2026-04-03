@@ -233,7 +233,7 @@ def _prepare_rule_assignments(
         if normalized_label in {"lista compleja", "lista completa", "dependencia"}:
             if not headers:
                 raise ValueError(
-                    "Las reglas de lista compleja o dependencia requieren definir 'header rule'."
+                    f"La regla asociada (ID {rule_id}) requiere definir 'header rule' al asignarla a la columna."
                 )
 
         if fallback_type is None:
