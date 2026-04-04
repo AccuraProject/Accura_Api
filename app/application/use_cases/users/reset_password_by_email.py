@@ -24,8 +24,10 @@ def reset_password_by_email(session: Session, *, email: str) -> tuple[User, str]
     repository = UserRepository(session)
 
     user = repository.get_by_email(normalized_email)
-    if user is None or not user.is_active:
-        raise ValueError("Usuario no encontrado")
+    if user is None:
+        raise ValueError("El correo electrónico no está registrado en el sistema")
+    if not user.is_active:
+        raise ValueError("El correo electrónico pertenece a un usuario inactivo")
 
     temporary_password = generate_secure_password()
     hashed_password = get_password_hash(temporary_password)

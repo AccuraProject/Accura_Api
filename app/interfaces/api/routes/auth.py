@@ -1,4 +1,4 @@
-"""Endpoints relacionados con autenticación y gestión de contraseñas."""
+"""Endpoints relacionados con autenticacion y gestion de contrasenas."""
 
 import logging
 from datetime import timedelta
@@ -35,9 +35,7 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 _IMPERSONATION_TOKEN_EXPIRE_SECONDS = 60 * 60
 
-_PASSWORD_RESET_MESSAGE = (
-    "Si el correo está registrado, recibirás un mensaje con una contraseña temporal."
-)
+_PASSWORD_RESET_MESSAGE = "Se envio una contrasena temporal al correo registrado."
 
 
 # Nota: se conserva la firma esperada por OAuth2PasswordRequestForm.
@@ -46,7 +44,7 @@ def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
-    """Autentica al usuario por correo electrónico y devuelve un token JWT."""
+    """Autentica al usuario por correo electronico y devuelve un token JWT."""
 
     user, auth_status = authenticate_user(db, form_data.username, form_data.password)
 
@@ -149,7 +147,7 @@ def generate_password_hash(
     payload: PasswordHashRequest,
     _: User = Depends(require_admin),
 ) -> PasswordHashResponse:
-    """Devuelve el hash de la contraseña indicada para uso administrativo."""
+    """Devuelve el hash de la contrasena indicada para uso administrativo."""
 
     hashed_password = get_password_hash(payload.password)
     return PasswordHashResponse(hashed_password=hashed_password)
@@ -164,7 +162,7 @@ def forgot_password(
     payload: ForgotPasswordRequest,
     db: Session = Depends(get_db),
 ) -> ForgotPasswordResponse:
-    """Genera una contraseña temporal y la envía al correo del usuario."""
+    """Genera una contrasena temporal y la envia al correo del usuario."""
 
     try:
         user, temporary_password = reset_password_by_email(
@@ -173,18 +171,23 @@ def forgot_password(
         )
     except ValueError as exc:
         detail = str(exc)
-        if detail == "El correo electrónico debe ser una cuenta de Gmail válida":
+        if detail in {
+            "El correo electronico debe tener un formato valido",
+            "El correo electrónico debe tener un formato válido",
+            "El correo electronico no esta registrado en el sistema",
+            "El correo electrónico no está registrado en el sistema",
+            "El correo electronico pertenece a un usuario inactivo",
+            "El correo electrónico pertenece a un usuario inactivo",
+        }:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc
-        logger.info(
-            "Solicitud de restablecimiento ignorada para %s: %s",
-            payload.email,
-            detail,
-        )
-        return ForgotPasswordResponse(message=_PASSWORD_RESET_MESSAGE)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No fue posible procesar la solicitud de restablecimiento",
+        ) from exc
 
     if not send_user_password_reset_email(user.email, temporary_password):
         logger.warning(
-            "No se pudo enviar el correo de restablecimiento de contraseña al usuario %s",
+            "No se pudo enviar el correo de restablecimiento de contrasena al usuario %s",
             user.email,
         )
 

@@ -315,6 +315,111 @@ def list_template_accesses_for_user(
     return [_access_to_read_model(access) for access in accesses]
 
 
+@router.post(
+    "/access",
+    response_model=list[TemplateUserAccessRead],
+    status_code=status.HTTP_201_CREATED,
+)
+def grant_template_accesses(
+    payload: TemplateUserAccessGrantList,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> list[TemplateUserAccessRead]:
+    """Concede acceso a una o varias plantillas para los usuarios indicados."""
+
+    try:
+        accesses = bulk_grant_template_access_uc(
+            db,
+            grants=[_dump_model(item) for item in payload],
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = status.HTTP_400_BAD_REQUEST
+        if detail in {"Plantilla no encontrada", "Usuario no encontrado"}:
+            status_code = status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    return [_access_to_read_model(access) for access in accesses]
+
+
+@router.get(
+    "/access",
+    response_model=list[TemplateUserAccessRead],
+)
+def list_template_access(
+    template_id: int = Query(..., ge=1),
+    include_inactive: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> list[TemplateUserAccessRead]:
+    """Lista los accesos configurados para la plantilla solicitada."""
+
+    try:
+        accesses = list_template_access_uc(
+            db,
+            template_id=template_id,
+            include_inactive=include_inactive,
+            current_user=current_user,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return [_access_to_read_model(access) for access in accesses]
+
+
+@router.put(
+    "/access",
+    response_model=list[TemplateUserAccessRead],
+)
+def update_template_accesses(
+    payload: TemplateUserAccessUpdateList,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> list[TemplateUserAccessRead]:
+    """Actualiza la ventana de acceso configurada para uno o varios accesos."""
+
+    try:
+        accesses = bulk_update_template_access_uc(
+            db,
+            updates=[_dump_model(item) for item in payload],
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = status.HTTP_400_BAD_REQUEST
+        if detail in {"Plantilla no encontrada", "Acceso no encontrado"}:
+            status_code = status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    return [_access_to_read_model(access) for access in accesses]
+
+
+@router.post(
+    "/access/revoke",
+    response_model=list[TemplateUserAccessRead],
+)
+def revoke_template_accesses(
+    payload: TemplateUserAccessRevokeList,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> list[TemplateUserAccessRead]:
+    """Revoca uno o varios accesos previamente concedidos."""
+
+    try:
+        accesses = bulk_revoke_template_access_uc(
+            db,
+            revocations=[_dump_model(item) for item in payload],
+            revoked_by=current_user.id,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = status.HTTP_400_BAD_REQUEST
+        if detail in {"Plantilla no encontrada", "Acceso no encontrado"}:
+            status_code = status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    return [_access_to_read_model(access) for access in accesses]
+
+
 @router.get("/{template_id}", response_model=TemplateRead)
 def read_template(
     template_id: int,
@@ -600,111 +705,6 @@ def delete_template_column(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.post(
-    "/access",
-    response_model=list[TemplateUserAccessRead],
-    status_code=status.HTTP_201_CREATED,
-)
-def grant_template_accesses(
-    payload: TemplateUserAccessGrantList,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
-) -> list[TemplateUserAccessRead]:
-    """Concede acceso a una o varias plantillas para los usuarios indicados."""
-
-    try:
-        accesses = bulk_grant_template_access_uc(
-            db,
-            grants=[_dump_model(item) for item in payload],
-        )
-    except ValueError as exc:
-        detail = str(exc)
-        status_code = status.HTTP_400_BAD_REQUEST
-        if detail in {"Plantilla no encontrada", "Usuario no encontrado"}:
-            status_code = status.HTTP_404_NOT_FOUND
-        raise HTTPException(status_code=status_code, detail=detail) from exc
-
-    return [_access_to_read_model(access) for access in accesses]
-
-
-@router.get(
-    "/access",
-    response_model=list[TemplateUserAccessRead],
-)
-def list_template_access(
-    template_id: int = Query(..., ge=1),
-    include_inactive: bool = False,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin),
-) -> list[TemplateUserAccessRead]:
-    """Lista los accesos configurados para la plantilla solicitada."""
-
-    try:
-        accesses = list_template_access_uc(
-            db,
-            template_id=template_id,
-            include_inactive=include_inactive,
-            current_user=current_user,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-
-    return [_access_to_read_model(access) for access in accesses]
-
-
-@router.put(
-    "/access",
-    response_model=list[TemplateUserAccessRead],
-)
-def update_template_accesses(
-    payload: TemplateUserAccessUpdateList,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
-) -> list[TemplateUserAccessRead]:
-    """Actualiza la ventana de acceso configurada para uno o varios accesos."""
-
-    try:
-        accesses = bulk_update_template_access_uc(
-            db,
-            updates=[_dump_model(item) for item in payload],
-        )
-    except ValueError as exc:
-        detail = str(exc)
-        status_code = status.HTTP_400_BAD_REQUEST
-        if detail in {"Plantilla no encontrada", "Acceso no encontrado"}:
-            status_code = status.HTTP_404_NOT_FOUND
-        raise HTTPException(status_code=status_code, detail=detail) from exc
-
-    return [_access_to_read_model(access) for access in accesses]
-
-
-@router.post(
-    "/access/revoke",
-    response_model=list[TemplateUserAccessRead],
-)
-def revoke_template_accesses(
-    payload: TemplateUserAccessRevokeList,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin),
-) -> list[TemplateUserAccessRead]:
-    """Revoca uno o varios accesos previamente concedidos."""
-
-    try:
-        accesses = bulk_revoke_template_access_uc(
-            db,
-            revocations=[_dump_model(item) for item in payload],
-            revoked_by=current_user.id,
-        )
-    except ValueError as exc:
-        detail = str(exc)
-        status_code = status.HTTP_400_BAD_REQUEST
-        if detail in {"Plantilla no encontrada", "Acceso no encontrado"}:
-            status_code = status.HTTP_404_NOT_FOUND
-        raise HTTPException(status_code=status_code, detail=detail) from exc
-
-    return [_access_to_read_model(access) for access in accesses]
 
 
 @router.get("/{template_id}/excel")
