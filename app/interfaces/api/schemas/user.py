@@ -4,10 +4,14 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
+from app.infrastructure.security import validate_password_strength
+
 try:  # Pydantic v2
-    from pydantic import ConfigDict
+    from pydantic import ConfigDict, field_validator
 except ImportError:  # pragma: no cover - compatibility path for pydantic v1
     ConfigDict = None  # type: ignore[misc]
+    field_validator = None  # type: ignore[assignment]
+    from pydantic import validator
 
 
 class RoleRead(BaseModel):
@@ -76,3 +80,30 @@ class UserSummaryRead(BaseModel):
     else:  # pragma: no cover - compatibility path for pydantic v1
         class Config:
             orm_mode = True
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8)
+
+    if ConfigDict is not None:  # pragma: no branch - runtime configuration
+        model_config = ConfigDict(extra="forbid")
+    else:  # pragma: no cover - compatibility path for pydantic v1
+        class Config:
+            extra = "forbid"
+
+    if field_validator is not None:  # pragma: no branch
+
+        @field_validator("new_password")  # type: ignore[misc[arg-type]]
+        @classmethod
+        def validate_new_password(cls, value: str) -> str:
+            return validate_password_strength(value, field_name="La nueva contrasena")
+
+    else:  # pragma: no cover - compatibility path for pydantic v1
+
+        @validator("new_password")
+        def validate_new_password_v1(cls, value: str) -> str:  # type: ignore[override]
+            return validate_password_strength(value, field_name="La nueva contrasena")
+
+
+class PasswordChangeResponse(BaseModel):
+    message: str

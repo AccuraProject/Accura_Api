@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.application.use_cases.users import (
+    change_password as change_password_uc,
     create_user as create_user_uc,
     delete_user as delete_user_uc,
     get_user as get_user_uc,
@@ -19,7 +20,13 @@ from app.infrastructure.email import (
     send_user_password_reset_email,
 )
 from app.interfaces.api.dependencies import get_current_active_user, require_admin
-from app.interfaces.api.schemas import UserCreate, UserRead, UserUpdate
+from app.interfaces.api.schemas import (
+    PasswordChangeRequest,
+    PasswordChangeResponse,
+    UserCreate,
+    UserRead,
+    UserUpdate,
+)
 from app.infrastructure.security import generate_secure_password
 from app.interfaces.api.routes_helpers import compute_credentials_notification
 
@@ -31,6 +38,8 @@ def _to_read_model(user: User) -> UserRead:
     if hasattr(UserRead, "model_validate"):
         return UserRead.model_validate(user)
     return UserRead.from_orm(user)
+
+
 @router.post("/", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def register_user(
     user_in: UserCreate,
@@ -63,6 +72,35 @@ def read_current_user(current_user: User = Depends(get_current_active_user)):
     """Devuelve la información del usuario autenticado."""
 
     return _to_read_model(current_user)
+
+
+@router.put("/me/password", response_model=PasswordChangeResponse)
+def change_current_user_password(
+    payload: PasswordChangeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Actualiza la contrasena del usuario autenticado."""
+
+    try:
+        change_password_uc(
+            db,
+            user_id=current_user.id,
+            current_password=payload.current_password,
+            new_password=payload.new_password,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = status.HTTP_400_BAD_REQUEST
+        if detail == "Usuario no encontrado":
+            status_code = status.HTTP_404_NOT_FOUND
+        elif detail == "Usuario inactivo":
+            status_code = status.HTTP_403_FORBIDDEN
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    return PasswordChangeResponse(
+        message="La contrasena fue actualizada correctamente"
+    )
 
 
 @router.get("/", response_model=list[UserRead])

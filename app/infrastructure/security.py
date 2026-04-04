@@ -31,6 +31,26 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 settings = get_settings()
 
 
+def validate_password_strength(
+    password: str,
+    *,
+    field_name: str = "La contrasena",
+) -> str:
+    """Validate the shared password policy used across the application."""
+
+    if len(password) < 8:
+        raise ValueError(f"{field_name} debe tener al menos 8 caracteres")
+    if not any(char.islower() for char in password):
+        raise ValueError(f"{field_name} debe incluir al menos una minuscula")
+    if not any(char.isupper() for char in password):
+        raise ValueError(f"{field_name} debe incluir al menos una mayuscula")
+    if not any(char.isdigit() for char in password):
+        raise ValueError(f"{field_name} debe incluir al menos un numero")
+    if not any(not char.isalnum() for char in password):
+        raise ValueError(f"{field_name} debe incluir al menos un caracter especial")
+    return password
+
+
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
     expire = now_in_app_timezone() + (
         expires_delta or timedelta(minutes=settings.access_token_expire_minutes)
@@ -53,12 +73,10 @@ def generate_secure_password() -> str:
 
     while True:
         password = "".join(secrets.choice(alphabet) for _ in range(length))
-        if (
-            any(char.islower() for char in password)
-            and any(char.isupper() for char in password)
-            and any(char.isdigit() for char in password)
-            and any(char in string.punctuation for char in password)
-        ):
+        try:
+            validate_password_strength(password)
             return password
+        except ValueError:
+            continue
 
 
