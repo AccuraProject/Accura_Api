@@ -22,7 +22,6 @@ from app.infrastructure.email import (
 from app.interfaces.api.dependencies import get_current_active_user, require_admin
 from app.interfaces.api.schemas import (
     PasswordChangeRequest,
-    PasswordChangeResponse,
     UserCreate,
     UserRead,
     UserUpdate,
@@ -74,7 +73,7 @@ def read_current_user(current_user: User = Depends(get_current_active_user)):
     return _to_read_model(current_user)
 
 
-@router.put("/me/password", response_model=PasswordChangeResponse)
+@router.put("/me/password", response_model=UserRead)
 def change_current_user_password(
     payload: PasswordChangeRequest,
     db: Session = Depends(get_db),
@@ -83,7 +82,7 @@ def change_current_user_password(
     """Actualiza la contrasena del usuario autenticado."""
 
     try:
-        change_password_uc(
+        user = change_password_uc(
             db,
             user_id=current_user.id,
             current_password=payload.current_password,
@@ -98,9 +97,7 @@ def change_current_user_password(
             status_code = status.HTTP_403_FORBIDDEN
         raise HTTPException(status_code=status_code, detail=detail) from exc
 
-    return PasswordChangeResponse(
-        message="La contrasena fue actualizada correctamente"
-    )
+    return _to_read_model(user)
 
 
 @router.get("/", response_model=list[UserRead])
