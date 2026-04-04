@@ -26,6 +26,7 @@ class TemplateUserAccessRepository:
         include_inactive: bool = False,
         include_scheduled: bool = False,
     ) -> Sequence[TemplateUserAccess]:
+        self._expire_outdated_accesses(template_id=template_id)
         query = self.session.query(TemplateUserAccessModel).filter(
             TemplateUserAccessModel.template_id == template_id,
             TemplateUserAccessModel.revoked_at.is_(None),
@@ -51,6 +52,7 @@ class TemplateUserAccessRepository:
         include_inactive: bool = False,
         include_scheduled: bool = False,
     ) -> Sequence[TemplateUserAccess]:
+        self._expire_outdated_accesses(user_id=user_id)
         query = self.session.query(TemplateUserAccessModel).filter(
             TemplateUserAccessModel.user_id == user_id,
             TemplateUserAccessModel.revoked_at.is_(None),
@@ -79,6 +81,7 @@ class TemplateUserAccessRepository:
         template_id: int,
         user_id: int,
     ) -> TemplateUserAccess | None:
+        self._expire_outdated_accesses(template_id=template_id, user_id=user_id)
         now = ensure_app_naive_datetime(now_in_app_timezone())
         model = (
             self.session.query(TemplateUserAccessModel)
@@ -119,6 +122,7 @@ class TemplateUserAccessRepository:
         end_date: datetime | None,
         exclude_access_id: int | None = None,
     ) -> TemplateUserAccess | None:
+        self._expire_outdated_accesses(template_id=template_id, user_id=user_id)
         query = self.session.query(TemplateUserAccessModel).filter(
             TemplateUserAccessModel.template_id == template_id,
             TemplateUserAccessModel.user_id == user_id,
@@ -142,6 +146,7 @@ class TemplateUserAccessRepository:
         template_id: int,
         reference_time: datetime | None = None,
     ) -> TemplateUserAccess | None:
+        self._expire_outdated_accesses(template_id=template_id, user_id=user_id)
         if reference_time is None:
             reference_time = ensure_app_naive_datetime(now_in_app_timezone())
         model = (
@@ -201,6 +206,33 @@ class TemplateUserAccessRepository:
         self.session.commit()
         self.session.refresh(model)
         return self._to_entity(model)
+
+    def _expire_outdated_accesses(
+        self,
+        *,
+        template_id: int | None = None,
+        user_id: int | None = None,
+    ) -> None:
+        now = ensure_app_naive_datetime(now_in_app_timezone())
+        query = self.session.query(TemplateUserAccessModel).filter(
+            TemplateUserAccessModel.revoked_at.is_(None),
+            TemplateUserAccessModel.end_date.is_not(None),
+            TemplateUserAccessModel.end_date < now,
+        )
+        if template_id is not None:
+            query = query.filter(TemplateUserAccessModel.template_id == template_id)
+        if user_id is not None:
+            query = query.filter(TemplateUserAccessModel.user_id == user_id)
+
+        expired_models = query.all()
+        if not expired_models:
+            return
+
+        for model in expired_models:
+            model.revoked_at = now
+            model.updated_at = now
+            self.session.add(model)
+        self.session.commit()
 
     @staticmethod
     def _to_entity(model: TemplateUserAccessModel) -> TemplateUserAccess:
