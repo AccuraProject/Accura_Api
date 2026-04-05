@@ -11,11 +11,13 @@ from copy import deepcopy
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy import false
+from sqlalchemy.orm import Session, joinedload
 
 from app.application.use_cases.rules import list_recent_rules as list_recent_rules_uc
 from app.domain.entities import Rule, User
 from app.infrastructure.database import get_db
+from app.infrastructure.models import TemplateColumnModel, TemplateModel
 from app.infrastructure.openai_client import (
     OffTopicMessageError,
     OpenAIServiceError,
@@ -50,11 +52,389 @@ _DEPENDENCY_TYPE_ALIASES: dict[str, str] = {
 }
 
 
+_SUPPORTED_TYPE_HINTS: dict[str, tuple[str, ...]] = {
+    "Texto": ("texto", "cadena", "caracter", "caracteres", "letras", "longitud"),
+    "NÃºmero": (
+        "numero",
+        "nÃºmero",
+        "porcentaje",
+        "decimal",
+        "entero",
+        "valor minimo",
+        "valor mÃ¡ximo",
+        "rango",
+        "mayor",
+        "menor",
+    ),
+    "Documento": ("documento", "dni", "ruc", "ce", "pasaporte"),
+    "Lista": ("lista", "opciones", "valores permitidos", "catÃ¡logo", "catalogo"),
+    "Lista compleja": ("lista compleja", "combinacion", "combinaciÃ³n"),
+    "TelÃ©fono": ("telefono", "telÃ©fono", "celular", "codigo de pais", "cÃ³digo de paÃ­s"),
+    "Correo": ("correo", "email", "e-mail"),
+    "Fecha": ("fecha", "yyyy", "dd/mm", "mm-dd"),
+    "Dependencia": ("dependencia", "dependa", "depender", "si ", "cuando "),
+    "ValidaciÃ³n conjunta": ("validacion conjunta", "validaciÃ³n conjunta", "coincida con", "coincidir"),
+    "Duplicados": ("duplicado", "duplicados", "Ãºnico", "unico", "repetido", "repetidos"),
+}
+
+_ACTIONABLE_RULE_MARKERS: tuple[str, ...] = (
+    "debe",
+    "debera",
+    "deberÃ¡",
+    "solo",
+    "solamente",
+    "unicamente",
+    "Ãºnicamente",
+    "permitido",
+    "permitidos",
+    "prohibido",
+    "prohibidos",
+    "distinto",
+    "diferente",
+    "igual",
+    "mayor",
+    "menor",
+    "entre",
+    "minimo",
+    "mÃ­nimo",
+    "maximo",
+    "mÃ¡ximo",
+    "longitud",
+    "formato",
+    "obligatorio",
+    "regex",
+    "patron",
+    "patrÃ³n",
+    "dependa",
+    "dependencia",
+    "duplicado",
+    "coincida",
+)
+
+_VAGUE_RULE_MARKERS: tuple[str, ...] = (
+    "sea correcto",
+    "este correcto",
+    "estÃ© correcto",
+    "no tenga errores",
+    "si esta mal",
+    "si estÃ¡ mal",
+    "si es incorrecto",
+    "si es invalido",
+    "si es invÃ¡lido",
+    "mostrar un mensaje",
+    "cualquiera",
+    "no valido",
+    "no vÃ¡lido",
+    "lo que corresponda",
+    "segun corresponda",
+    "segÃºn corresponda",
+)
+
+
 def _normalize_label(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", str(value))
     ascii_text = "".join(char for char in normalized if not unicodedata.combining(char))
     collapsed = re.sub(r"[\s\-_]+", " ", ascii_text)
     return collapsed.lower().strip()
+
+
+def _extract_quoted_labels(message: str) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+
+    for match in re.finditer(r"[\"“”'‘’]([^\"“”'‘’]{2,80})[\"“”'‘’]", message):
+        candidate = match.group(1).strip()
+        normalized = _normalize_label(candidate)
+        if not candidate or normalized in seen:
+            continue
+        seen.add(normalized)
+        labels.append(candidate)
+
+    return labels
+
+
+def _extract_dependency_field_candidates(message: str) -> tuple[str | None, str | None]:
+    labels = _extract_quoted_labels(message)
+    if len(labels) >= 2:
+        return labels[0], labels[1]
+    return None, None
+
+
+def _infer_supported_data_types(message: str) -> set[str]:
+    normalized = _normalize_label(message)
+    inferred_types: set[str] = set()
+
+    for type_label, hints in _SUPPORTED_TYPE_HINTS.items():
+        for hint in hints:
+            if _normalize_label(hint) in normalized:
+                inferred_types.add(type_label)
+                break
+
+    if re.search(r"\b\d+(?:[.,]\d+)?\b", normalized):
+        inferred_types.add("NÃºmero")
+
+    return inferred_types
+
+
+def _has_actionable_rule_detail(message: str) -> bool:
+    normalized = _normalize_label(message)
+    if re.search(r"\b\d+(?:[.,]\d+)?\b", normalized):
+        return True
+
+    quoted_labels = _extract_quoted_labels(message)
+    if len(quoted_labels) >= 2 and any(
+        marker in normalized for marker in ("si ", "cuando ", "debe ", "solo ", "distinto ")
+    ):
+        return True
+
+    return any(marker in normalized for marker in _ACTIONABLE_RULE_MARKERS)
+
+
+def _validate_message_semantics(message: str) -> str | None:
+    normalized = _normalize_label(message)
+    inferred_types = _infer_supported_data_types(message)
+    actionable_detail = _has_actionable_rule_detail(message)
+    vague_detail = any(marker in normalized for marker in _VAGUE_RULE_MARKERS)
+
+    if vague_detail and not actionable_detail:
+        return (
+            "El mensaje tiene forma de regla, pero no define una validaciÃ³n concreta. "
+            "Indica una condiciÃ³n real, por ejemplo lÃ­mites, formato, valores permitidos o una dependencia clara."
+        )
+
+    if not actionable_detail:
+        return (
+            "El mensaje no describe una validaciÃ³n accionable. "
+            "Falta indicar una restricciÃ³n concreta como rango, formato, lista permitida, unicidad o dependencia."
+        )
+
+    if not inferred_types:
+        return (
+            "No se pudo relacionar el mensaje con un tipo de dato soportado. "
+            "Especifica mejor si se trata de texto, nÃºmero, documento, lista, fecha, correo, telÃ©fono, dependencia, validaciÃ³n conjunta o duplicados."
+        )
+
+    return None
+
+
+def _validate_dependency_message_coherence(message: str) -> str | None:
+    normalized = _normalize_label(message)
+    dependency_markers = ("depend", "dependa", "depender", "dependencia")
+    if not any(marker in normalized for marker in dependency_markers):
+        return None
+
+    dependent_field, source_field = _extract_dependency_field_candidates(message)
+    if not dependent_field or not source_field:
+        return (
+            "El mensaje parece pedir una dependencia, pero no identifica con claridad "
+            "dos campos distintos entre comillas para relacionarlos."
+        )
+
+    if _normalize_label(dependent_field) == _normalize_label(source_field):
+        return (
+            "La dependencia debe involucrar dos campos distintos. "
+            "El mensaje actual repite el mismo campo."
+        )
+
+    logical_markers = (
+        " si ",
+        " debe ",
+        " debera ",
+        " deberá ",
+        " cuando ",
+        " en caso contrario ",
+        " mostrar ",
+        " mensaje ",
+        " unicamente ",
+        " únicamente ",
+        " distinto ",
+        " diferente ",
+    )
+    if not any(marker in f" {normalized} " for marker in logical_markers):
+        return (
+            "El mensaje identifica campos, pero no describe una condición o consecuencia "
+            "lo bastante clara para construir la dependencia."
+        )
+
+    return None
+
+
+def _iter_scalar_values(value: Any) -> list[str]:
+    collected: list[str] = []
+
+    if isinstance(value, str):
+        candidate = value.strip()
+        if candidate:
+            collected.append(candidate)
+        return collected
+
+    if isinstance(value, Mapping):
+        for nested in value.values():
+            collected.extend(_iter_scalar_values(nested))
+        return collected
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        for item in value:
+            if isinstance(item, Mapping):
+                continue
+            collected.extend(_iter_scalar_values(item))
+
+    return collected
+
+
+def _extract_list_values_for_header(
+    definition: Mapping[str, Any], target_header: str
+) -> list[str]:
+    normalized_target = _normalize_label(target_header)
+    collected: list[str] = []
+    seen: set[str] = set()
+
+    rule_type = definition.get("Tipo de dato")
+    rule_block = definition.get("Regla")
+
+    if (
+        isinstance(rule_type, str)
+        and _normalize_label(rule_type) == "lista"
+        and isinstance(rule_block, Mapping)
+    ):
+        header_entries = _deduplicate_headers(_extract_header_entries(definition.get("Header rule")))
+        if not header_entries:
+            header_entries = _deduplicate_headers(_extract_header_entries(definition.get("Header")))
+        if header_entries and _normalize_label(header_entries[0]) == normalized_target:
+            for value in _iter_scalar_values(rule_block.get("Lista")):
+                normalized_value = _normalize_label(value)
+                if normalized_value in seen:
+                    continue
+                seen.add(normalized_value)
+                collected.append(value)
+
+    if (
+        isinstance(rule_type, str)
+        and _normalize_label(rule_type) == "dependencia"
+        and isinstance(rule_block, Mapping)
+    ):
+        specifics = rule_block.get("reglas especifica")
+        if isinstance(specifics, Sequence) and not isinstance(specifics, (str, bytes)):
+            for entry in specifics:
+                if not isinstance(entry, Mapping):
+                    continue
+                for key, value in entry.items():
+                    if not isinstance(key, str) or _normalize_label(key) != normalized_target:
+                        continue
+                    for item in _iter_scalar_values(value):
+                        normalized_value = _normalize_label(item)
+                        if normalized_value in seen:
+                            continue
+                        seen.add(normalized_value)
+                        collected.append(item)
+
+    return collected
+
+
+def _find_matching_columns(
+    candidate_labels: Sequence[str], column_models: Sequence[TemplateColumnModel]
+) -> list[TemplateColumnModel]:
+    normalized_targets = {
+        _normalize_label(label)
+        for label in candidate_labels
+        if isinstance(label, str) and label.strip()
+    }
+    if not normalized_targets:
+        return []
+
+    exact_matches: list[TemplateColumnModel] = []
+    fuzzy_matches: list[TemplateColumnModel] = []
+    seen_ids: set[int] = set()
+
+    for model in column_models:
+        if model.id is None:
+            continue
+        normalized_name = _normalize_label(model.name)
+        if normalized_name in normalized_targets:
+            exact_matches.append(model)
+            seen_ids.add(model.id)
+            continue
+        if any(
+            normalized_target in normalized_name or normalized_name in normalized_target
+            for normalized_target in normalized_targets
+        ):
+            fuzzy_matches.append(model)
+
+    return exact_matches + [model for model in fuzzy_matches if model.id not in seen_ids]
+
+
+def _build_reference_context(
+    db: Session,
+    current_user: User,
+    message: str,
+) -> dict[str, Any] | None:
+    candidate_labels = _extract_quoted_labels(message)
+    if not candidate_labels:
+        return None
+
+    creator_scope = current_user.id if current_user.is_admin() else current_user.created_by
+    if creator_scope is None:
+        return None
+
+    column_models = (
+        db.query(TemplateColumnModel)
+        .options(
+            joinedload(TemplateColumnModel.rules),
+            joinedload(TemplateColumnModel.template),
+        )
+        .join(TemplateModel, TemplateModel.id == TemplateColumnModel.template_id)
+        .filter(TemplateColumnModel.deleted == false())
+        .filter(TemplateModel.deleted == false())
+        .filter(TemplateModel.created_by == creator_scope)
+        .all()
+    )
+
+    matched_columns = _find_matching_columns(candidate_labels, column_models)
+    if not matched_columns:
+        return None
+
+    columns_context: list[dict[str, Any]] = []
+    matched_names = {_normalize_label(model.name) for model in matched_columns}
+    missing_fields = [
+        label for label in candidate_labels if _normalize_label(label) not in matched_names
+    ]
+
+    for model in matched_columns:
+        list_values: list[str] = []
+        seen_values: set[str] = set()
+
+        for rule_model in model.rules:
+            for definition in _iter_rule_definitions(rule_model.rule):
+                for item in _extract_list_values_for_header(definition, model.name):
+                    normalized_item = _normalize_label(item)
+                    if normalized_item in seen_values:
+                        continue
+                    seen_values.add(normalized_item)
+                    list_values.append(item)
+
+        column_payload: dict[str, Any] = {
+            "nombre": model.name,
+            "tipo_de_dato": model.data_type,
+        }
+        if model.description:
+            column_payload["descripcion"] = model.description
+        if getattr(model, "template", None) is not None:
+            column_payload["template"] = model.template.name
+        if list_values:
+            column_payload["valores_existentes"] = list_values
+
+        columns_context.append(column_payload)
+
+    dependent_field, source_field = _extract_dependency_field_candidates(message)
+    context: dict[str, Any] = {"columnas_relacionadas": columns_context}
+    if missing_fields:
+        context["campos_no_encontrados"] = missing_fields
+    if dependent_field and source_field:
+        context["dependencia_detectada"] = {
+            "campo_dependiente": dependent_field,
+            "campo_condicionante": source_field,
+        }
+    return context
 
 
 def _iter_rule_definitions(rule_payload: Any) -> list[Mapping[str, Any]]:
@@ -361,6 +741,15 @@ def analyze_message(
     """Genera una respuesta estructurada que indica cómo atender el mensaje del usuario."""
 
     try:
+        semantics_error = _validate_message_semantics(payload.message)
+        if semantics_error:
+            raise OffTopicMessageError(semantics_error)
+
+        coherence_error = _validate_dependency_message_coherence(payload.message)
+        if coherence_error:
+            raise OffTopicMessageError(coherence_error)
+
+        reference_context = _build_reference_context(db, current_user, payload.message)
         recent_rules = list_recent_rules_uc(
             db, current_user=current_user, limit=5
         )
@@ -375,6 +764,7 @@ def analyze_message(
         raw_response = assistant.generate_structured_response(
             payload.message,
             recent_rules=serialized_rules or None,
+            reference_context=reference_context,
         )
         logger.debug("Respuesta sin validar del asistente: %s", raw_response)
         raw_response = _sanitize_dependency_header(raw_response)

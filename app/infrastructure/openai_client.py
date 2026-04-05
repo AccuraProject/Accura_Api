@@ -918,6 +918,7 @@ class StructuredChatService:
         user_message: str,
         *,
         recent_rules: Sequence[dict[str, Any]] | None = None,
+        reference_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Envía un mensaje y devuelve JSON validado por el modelo, usando JSON Schema estricto.
@@ -937,6 +938,7 @@ class StructuredChatService:
                     user_message,
                     json_schema_definition,
                     recent_rules=recent_rules,
+                    reference_context=reference_context,
                     limit_mode=limit_mode,
                     broad_catalog_request=broad_catalog_request,
                 )
@@ -956,6 +958,7 @@ class StructuredChatService:
         json_schema_definition: dict[str, Any],
         *,
         recent_rules: Sequence[dict[str, Any]] | None,
+        reference_context: Mapping[str, Any] | None,
         limit_mode: bool,
         broad_catalog_request: bool,
     ) -> dict[str, Any]:
@@ -966,9 +969,9 @@ class StructuredChatService:
 
         instruction = (
             "Analiza el mensaje del usuario y construye una definición de regla de validación para campos de "
-            "formularios usados en el sector InsurTech (tecnología aplicada a seguros). "
-            "Debes responder con un JSON que cumpla EXACTAMENTE con el esquema 'Regla de Campo' y definir todas las "
-            "propiedades requeridas. Cuando definas reglas del tipo 'Dependencia', omite la propiedad 'Nombre dependiente'. "
+            "formularios. Debes responder con un JSON que cumpla EXACTAMENTE con el esquema 'Regla de Campo' y "
+            "definir todas las propiedades requeridas. Cuando definas reglas del tipo 'Dependencia', omite la "
+            "propiedad 'Nombre dependiente'. "
 
             "REGLAS PARA 'Header' Y 'Header rule' EN DEPENDENCIAS: "
             "1) Identifica siempre dos cosas: la columna condicionante (por ejemplo, 'Tipo Documento') y la columna dependiente "
@@ -994,8 +997,10 @@ class StructuredChatService:
 
             "En reglas que no son de tipo 'Dependencia', 'Header' debe listar las columnas del formulario afectadas y sus "
             "parámetros configurables; 'Header rule' puede ser igual a 'Header' o quedar vacío si no aplica. "
-            "Si el mensaje del usuario no especifica algún valor requerido, dedúcelo o propone uno coherente con las prácticas "
-            "del sector asegurador. Nunca uses textos genéricos como 'N/A', 'Por definir' ni dejes campos vacíos. "
+            "Si el mensaje del usuario no especifica algún valor requerido, dedúcelo o propone uno coherente con el contexto. "
+            "Nunca uses textos genéricos como 'N/A', 'Por definir' ni dejes campos vacíos. "
+            "La 'Descripción' y el 'Mensaje de error' deben sonar naturales y fáciles de entender para cualquier usuario. "
+            "No menciones sectores o dominios especializados salvo que el usuario lo pida expresamente. "
             "En 'Ejemplo', entrega un caso válido y uno inválido lo más realista posible."
         )
 
@@ -1048,6 +1053,26 @@ class StructuredChatService:
                                 "Estas son las reglas de validación más recientes registradas en el sistema. "
                                 "Úsalas como conocimiento previo para mantener consistencia y evitar duplicados:\n"
                                 f"{recent_rules_payload}"
+                            ),
+                        }
+                    ],
+                }
+            )
+
+        if reference_context:
+            reference_payload = json.dumps(reference_context, ensure_ascii=False, indent=2)
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "Contexto detectado en la base de datos para esta solicitud. "
+                                "Si los campos o valores del pedido del usuario aparecen aquí, reutilízalos tal cual "
+                                "y priorízalos sobre valores inventados. Si falta alguno, genera una opción coherente "
+                                "solo para lo que no exista.\n"
+                                f"{reference_payload}"
                             ),
                         }
                     ],
