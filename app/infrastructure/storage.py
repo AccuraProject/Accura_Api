@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Optional
 
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
-from azure.storage.blob import BlobServiceClient, ContentSettings
+from azure.storage.blob import (
+    BlobSasPermissions,
+    BlobServiceClient,
+    ContentSettings,
+    generate_blob_sas,
+)
 
 from app.config import get_settings
 
@@ -89,8 +95,61 @@ def download_blob_to_path(blob_path: str, destination: Path) -> Path:
     return destination
 
 
+def build_downloadable_blob_url(
+    blob_path: str,
+    *,
+    download_name: str | None = None,
+    expires_in_hours: int = 24 * 30,
+) -> str:
+    """Return a time-limited downloadable URL for ``blob_path``."""
+
+    if not blob_path:
+        msg = "Blob path is required"
+        raise ValueError(msg)
+
+    service_client = _get_blob_service_client()
+    account_name = service_client.account_name
+    credential = getattr(service_client.credential, "account_key", None)
+    if not account_name or not credential:
+        msg = "Azure storage account key is required to generate blob download URLs"
+        raise RuntimeError(msg)
+
+    from datetime import datetime, timedelta, timezone
+
+    sas_token = generate_blob_sas(
+        account_name=account_name,
+        container_name=_get_container_name(),
+        blob_name=blob_path,
+        account_key=credential,
+        permission=BlobSasPermissions(read=True),
+        expiry=datetime.now(timezone.utc) + timedelta(hours=expires_in_hours),
+        content_disposition=(
+            f'attachment; filename="{download_name}"' if download_name else "attachment"
+        ),
+    )
+    blob_client = _get_container_client().get_blob_client(blob_path)
+    return f"{blob_client.url}?{sas_token}"
+
+
+def extract_blob_path_from_url(blob_url: str) -> str | None:
+    """Extract the blob path relative to the container from a blob URL."""
+
+    if not blob_url:
+        return None
+
+    parsed = urlparse(blob_url)
+    path = parsed.path.lstrip("/")
+    container_name = _get_container_name().strip("/")
+    prefix = f"{container_name}/"
+    if path.startswith(prefix):
+        return path[len(prefix) :]
+    return None
+
+
 __all__ = [
+    "build_downloadable_blob_url",
     "upload_blob",
     "delete_blob",
     "download_blob_to_path",
+    "extract_blob_path_from_url",
 ]

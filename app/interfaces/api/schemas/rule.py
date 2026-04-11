@@ -36,6 +36,8 @@ class RuleUpdate(BaseModel):
 
 class RuleRead(RuleBase):
     id: int
+    summary: str | None
+    attachment: str | None
     created_by: int | None
     created_at: datetime | None
     updated_by: int | None

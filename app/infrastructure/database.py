@@ -8,7 +8,7 @@ import logging
 import re
 import urllib.parse
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import Settings, get_settings
@@ -117,6 +117,36 @@ def initialize_database() -> None:
     from app.infrastructure import models  # noqa: F401  # ensure models are imported
 
     Base.metadata.create_all(bind=engine, checkfirst=True)
+    _ensure_rule_columns()
+
+
+def _ensure_rule_columns() -> None:
+    """Add non-destructive missing columns for legacy rule tables."""
+
+    inspector = inspect(engine)
+    if "rule" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"].lower() for column in inspector.get_columns("rule")}
+    dialect = engine.dialect.name.lower()
+    statements: list[str] = []
+    if "summary" not in existing_columns:
+        if dialect == "mssql":
+            statements.append("ALTER TABLE [rule] ADD [summary] NVARCHAR(MAX) NULL")
+        else:
+            statements.append('ALTER TABLE "rule" ADD COLUMN "summary" TEXT NULL')
+    if "attachment" not in existing_columns:
+        if dialect == "mssql":
+            statements.append("ALTER TABLE [rule] ADD [attachment] NVARCHAR(MAX) NULL")
+        else:
+            statements.append('ALTER TABLE "rule" ADD COLUMN "attachment" TEXT NULL')
+
+    if not statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
 
 
 def get_db() -> Generator:

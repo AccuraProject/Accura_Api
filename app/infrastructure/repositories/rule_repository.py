@@ -154,6 +154,8 @@ class RuleRepository:
         return Rule(
             id=model.id,
             rule=model.rule,
+            summary=model.summary,
+            attachment=model.attachment,
             created_by=model.created_by,
             created_at=ensure_app_naive_datetime(model.created_at),
             updated_by=model.updated_by,
@@ -204,6 +206,8 @@ class RuleRepository:
     @staticmethod
     def _apply_entity_to_model(model: RuleModel, rule: Rule) -> None:
         model.rule = rule.rule
+        model.summary = rule.summary
+        model.attachment = rule.attachment
         model.created_by = rule.created_by
         if rule.created_at is not None:
             model.created_at = ensure_app_naive_datetime(rule.created_at)
