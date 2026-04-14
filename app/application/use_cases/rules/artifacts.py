@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
@@ -189,24 +190,224 @@ def _build_workbook(headers: list[str], rows: list[dict[str, Any]]) -> bytes:
     return buffer.getvalue()
 
 
-def _build_summary_for_definition(definition: Mapping[str, Any]) -> str:
+def _serialize_summary_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            _safe_text(key): _serialize_summary_value(nested)
+            for key, nested in value.items()
+            if _safe_text(key)
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [_serialize_summary_value(item) for item in value]
+    return value
+
+
+def _humanize_value(value: Any) -> str:
+    if value is None:
+        return "No definido"
+    if isinstance(value, bool):
+        return "Sí" if value else "No"
+    if isinstance(value, Mapping):
+        if not value:
+            return "Sin configuración adicional"
+        return "Configuración estructurada"
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        if not value:
+            return "Sin elementos"
+        preview = ", ".join(_safe_text(item) for item in value[:5])
+        if len(value) > 5:
+            preview += ", ..."
+        return preview
+    return _safe_text(value) or "No definido"
+
+
+def _collect_configuration_items(
+    value: Any,
+    *,
+    path: str = "",
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            label = _safe_text(key)
+            if not label:
+                continue
+            current_path = f"{path}.{label}" if path else label
+            items.append(
+                {
+                    "field": label,
+                    "path": current_path,
+                    "current_value": _serialize_summary_value(nested),
+                    "explained_value": _humanize_value(nested),
+                }
+            )
+            items.extend(_collect_configuration_items(nested, path=current_path))
+        return items
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        for index, item in enumerate(value):
+            current_path = f"{path}[{index}]"
+            items.append(
+                {
+                    "field": f"item_{index + 1}",
+                    "path": current_path,
+                    "current_value": _serialize_summary_value(item),
+                    "explained_value": _humanize_value(item),
+                }
+            )
+            items.extend(_collect_configuration_items(item, path=current_path))
+
+    return items
+
+
+def _infer_expected_value(rule_type: str) -> str:
+    normalized = _normalize_label(rule_type)
+    mapping = {
+        "texto": "Un texto que cumpla las reglas de longitud o formato configuradas.",
+        "numero": "Un valor numérico dentro de los límites permitidos.",
+        "documento": "Un identificador o documento con la longitud y estructura esperadas.",
+        "lista": "Uno de los valores definidos en la lista permitida.",
+        "lista compleja": "Una combinación exacta de valores entre varios campos permitidos por la regla.",
+        "lista completa": "Una combinación exacta de valores entre varios campos permitidos por la regla.",
+        "telefono": "Un número telefónico válido según país y longitud configurada.",
+        "correo": "Una dirección de correo válida según el formato esperado.",
+        "fecha": "Una fecha que cumpla el formato configurado.",
+        "dependencia": "Un valor válido dependiendo de lo que tenga otro campo relacionado.",
+        "validacion conjunta": "Un conjunto de campos coherentes entre sí.",
+        "duplicados": "Un registro cuya combinación de campos no se repita donde la regla lo prohíbe.",
+    }
+    return mapping.get(normalized, "Un valor que cumpla las condiciones definidas por la regla.")
+
+
+def _infer_failure_reason(rule_type: str) -> str:
+    normalized = _normalize_label(rule_type)
+    mapping = {
+        "texto": "Falla si el texto viene vacío cuando es obligatorio o no cumple longitud o formato.",
+        "numero": "Falla si el valor no es numérico o está fuera del rango permitido.",
+        "documento": "Falla si el documento no coincide con la longitud o estructura esperadas.",
+        "lista": "Falla si el valor no está dentro de la lista de opciones permitidas.",
+        "lista compleja": "Falla si la combinación de valores no existe dentro de las combinaciones autorizadas.",
+        "lista completa": "Falla si la combinación de valores no existe dentro de las combinaciones autorizadas.",
+        "telefono": "Falla si no cumple longitud, prefijo o formato telefónico esperado.",
+        "correo": "Falla si no parece un correo válido o supera restricciones configuradas.",
+        "fecha": "Falla si la fecha no coincide con el formato esperado.",
+        "dependencia": "Falla si el valor no cumple la condición que depende de otro campo.",
+        "validacion conjunta": "Falla si el conjunto de campos no cumple la coherencia esperada.",
+        "duplicados": "Falla si se repite una combinación de campos marcada como única.",
+    }
+    return mapping.get(normalized, "Falla cuando el dato no cumple la configuración definida.")
+
+
+def _build_user_examples(
+    *,
+    rule_type: str,
+    required: bool,
+    interpreted_config: Mapping[str, Any],
+) -> tuple[list[str], list[str]]:
+    normalized = _normalize_label(rule_type)
+    valid_examples: list[str] = ["Valor de ejemplo válido"]
+    invalid_examples: list[str] = ["Valor de ejemplo no válido"]
+
+    if normalized == "lista":
+        allowed_values = interpreted_config.get("allowed_values")
+        if isinstance(allowed_values, Sequence) and allowed_values and not isinstance(allowed_values, (str, bytes)):
+            valid_examples = [_safe_text(value) for value in allowed_values[:3] if _safe_text(value)] or valid_examples
+            invalid_examples = ["Un valor por fuera de la lista permitida"]
+    elif normalized in {"lista compleja", "lista completa"}:
+        combinations = interpreted_config.get("allowed_combinations")
+        if isinstance(combinations, Sequence) and combinations and not isinstance(combinations, (str, bytes)):
+            valid_examples = [_humanize_value(item) for item in combinations[:2]]
+            invalid_examples = ["Una combinación de campos que no aparece en la lista autorizada"]
+    elif normalized == "dependencia":
+        scenarios = interpreted_config.get("scenarios")
+        if isinstance(scenarios, Sequence) and scenarios and not isinstance(scenarios, (str, bytes)):
+            valid_examples = [_humanize_value(item) for item in scenarios[:2]]
+            invalid_examples = ["Un valor que no cumple la condición definida para ese caso"]
+    elif normalized == "fecha":
+        valid_examples = ["2026-04-13", "2025-12-01"]
+        invalid_examples = ["13/40/2026", "abril 13"]
+    elif normalized == "correo":
+        valid_examples = ["usuario@empresa.com", "nombre.apellido@dominio.co"]
+        invalid_examples = ["usuario@", "correo-sin-arroba.com"]
+    elif normalized == "telefono":
+        valid_examples = ["+573001234567", "+571234567890"]
+        invalid_examples = ["123", "telefono"]
+    elif normalized == "numero":
+        valid_examples = ["150", "25.5"]
+        invalid_examples = ["texto", "12,34,56"]
+    elif normalized == "texto":
+        valid_examples = ["Texto válido", "Nombre completo"]
+        invalid_examples = ["", "   "] if required else ["Texto con formato no permitido"]
+    elif normalized == "documento":
+        valid_examples = ["12345678", "CC10203040"]
+        invalid_examples = ["ABC", ""]
+    elif normalized == "duplicados":
+        valid_examples = ["Un registro cuya combinación de campos es única"]
+        invalid_examples = ["Un registro que repite una combinación ya existente"]
+    elif normalized == "validacion conjunta":
+        valid_examples = ["Una combinación coherente entre campos relacionados"]
+        invalid_examples = ["Una combinación inconsistente entre campos relacionados"]
+
+    if required and "" not in invalid_examples:
+        invalid_examples = [*invalid_examples, "Valor vacío"]
+
+    return valid_examples, invalid_examples
+
+
+def _build_short_summary_text(
+    *,
+    name: str,
+    rule_type: str,
+    required: bool,
+    description: str,
+    business_description: str,
+) -> str:
+    parts = [
+        f"La regla '{name}' valida información de tipo {rule_type or 'No especificado'}.",
+        business_description,
+        "El campo es obligatorio." if required else "El campo no es obligatorio en todos los casos.",
+    ]
+    if description:
+        parts.append(description.rstrip(".") + ".")
+    return " ".join(part.strip() for part in parts if part.strip())
+
+
+def _build_summary_for_definition(definition: Mapping[str, Any]) -> dict[str, Any]:
     name = _safe_text(definition.get("Nombre de la regla")) or "Regla sin nombre"
     rule_type = _safe_text(definition.get("Tipo de dato")) or "No especificado"
-    required = "si" if bool(definition.get("Campo obligatorio")) else "no"
+    required = bool(definition.get("Campo obligatorio"))
     error_message = _safe_text(definition.get("Mensaje de error"))
     description = _safe_text(definition.get("Descripcion")) or _safe_text(
         definition.get("Descripci\u00f3n")
     )
     rule_block = definition.get("Regla")
     normalized_type = _normalize_label(rule_type)
+    headers = definition.get("Header")
+    header_rule = definition.get("Header rule")
 
-    details = ""
+    explained_rule_type = "general"
+    business_description = "Valida una regla con la configuracion registrada."
+    interpreted_config: dict[str, Any] = {}
+    readable_details: list[str] = []
+
     if isinstance(rule_block, Mapping):
         if normalized_type == "lista":
+            explained_rule_type = "lista_cerrada"
             values = rule_block.get("Lista")
             if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
-                details = f"Solo acepta valores de una lista cerrada con {len(values)} opciones."
+                interpreted_config = {
+                    "allowed_values_count": len(values),
+                    "allowed_values": [_safe_text(value) for value in values if _safe_text(value)],
+                }
+                business_description = (
+                    "Solo acepta valores predefinidos dentro de una lista cerrada."
+                )
+                readable_details.append(
+                    f"Valores permitidos configurados: {len(interpreted_config['allowed_values'])}."
+                )
         elif normalized_type in {"lista compleja", "lista completa"}:
+            explained_rule_type = "lista_compleja"
             values = next(
                 (
                     candidate
@@ -219,15 +420,19 @@ def _build_summary_for_definition(definition: Mapping[str, Any]) -> str:
             if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
                 first_item = next((item for item in values if isinstance(item, Mapping)), None)
                 headers = list(first_item.keys()) if isinstance(first_item, Mapping) else []
-                if headers:
-                    details = (
-                        "Valida combinaciones permitidas entre "
-                        + ", ".join(_safe_text(header) for header in headers)
-                        + f" en {len(values)} registros cargados."
-                    )
-                else:
-                    details = f"Valida combinaciones permitidas en {len(values)} registros cargados."
+                interpreted_config = {
+                    "combinations_count": len(values),
+                    "combination_headers": [_safe_text(header) for header in headers if _safe_text(header)],
+                    "allowed_combinations": _serialize_summary_value(values),
+                }
+                business_description = (
+                    "Valida combinaciones especificas permitidas entre varios campos."
+                )
+                readable_details.append(
+                    f"Combinaciones permitidas configuradas: {interpreted_config['combinations_count']}."
+                )
         elif normalized_type == "dependencia":
+            explained_rule_type = "dependencia"
             specifics = _extract_dependency_specifics(rule_block)
             if specifics:
                 control_fields: list[str] = []
@@ -241,35 +446,93 @@ def _build_summary_for_definition(definition: Mapping[str, Any]) -> str:
                         label = key.strip()
                         if label and label not in control_fields:
                             control_fields.append(label)
-                if control_fields:
-                    details = (
-                        "Aplica reglas segun el valor de "
-                        + ", ".join(control_fields)
-                        + f" con {len(specifics)} escenarios configurados."
-                    )
-                else:
-                    details = f"Aplica reglas condicionales con {len(specifics)} escenarios configurados."
+                interpreted_config = {
+                    "scenarios_count": len(specifics),
+                    "control_fields": control_fields,
+                    "scenarios": _serialize_summary_value(specifics),
+                }
+                business_description = (
+                    "Aplica validaciones condicionales segun el valor de uno o mas campos."
+                )
+                readable_details.append(
+                    f"Escenarios condicionales configurados: {interpreted_config['scenarios_count']}."
+                )
         else:
+            interpreted_config = {
+                "main_parameters": [
+                    {
+                        "key": key,
+                        "value": _safe_text(value),
+                    }
+                    for key, value in rule_block.items()
+                    if isinstance(key, str)
+                    and not isinstance(value, (Mapping, list, tuple, set))
+                ]
+            }
             detail_parts = [
-                f"{key}: {_safe_text(value)}"
+                {
+                    "key": key,
+                    "value": _safe_text(value),
+                }
                 for key, value in rule_block.items()
                 if isinstance(key, str)
                 and not isinstance(value, (Mapping, list, tuple, set))
             ]
             if detail_parts:
-                details = "Parametros principales: " + "; ".join(detail_parts) + "."
+                business_description = (
+                    "Valida el dato con base en parametros de configuracion directos."
+                )
+                readable_details.append(
+                    f"Parámetros directos configurados: {len(detail_parts)}."
+                )
 
-    pieces = [
-        f"La regla '{name}' valida datos de tipo {rule_type}.",
-        f"Campo obligatorio: {required}.",
-    ]
-    if description:
-        pieces.append(description.rstrip(".") + ".")
-    if details:
-        pieces.append(details)
-    if error_message:
-        pieces.append(f"Si falla, muestra: {error_message}.")
-    return " ".join(piece.strip() for piece in pieces if piece.strip())
+    user_examples = _build_user_examples(
+        rule_type=rule_type,
+        required=required,
+        interpreted_config=interpreted_config,
+    )
+    visible_fields = _serialize_summary_value(headers) if headers is not None else []
+    support_fields = _serialize_summary_value(header_rule) if header_rule is not None else []
+    valid_examples, invalid_examples = user_examples
+
+    return {
+        "rule_name": name,
+        "technical_type": rule_type,
+        "summary": _build_short_summary_text(
+            name=name,
+            rule_type=rule_type,
+            required=required,
+            description=description,
+            business_description=business_description,
+        ),
+        "description": description or business_description,
+        "type": rule_type,
+        "required": required,
+        "what_it_validates": _infer_expected_value(rule_type),
+        "when_it_fails": _infer_failure_reason(rule_type),
+        "error_message": error_message or None,
+        "valid_examples": valid_examples,
+        "invalid_examples": invalid_examples,
+        "main_fields": visible_fields,
+        "support_fields": support_fields,
+        "configuration_summary": readable_details,
+        "configuration": {
+            "interpreted": interpreted_config,
+            "original": _serialize_summary_value(rule_block) if rule_block is not None else {},
+        },
+    }
+
+
+def build_rule_summary_payload(
+    rule_payload: dict[str, Any] | list[Any],
+) -> dict[str, Any]:
+    definitions = _iter_rule_definitions(rule_payload)
+    rules = [_build_summary_for_definition(definition) for definition in definitions]
+    return {
+        "version": 1,
+        "rule_count": len(rules),
+        "rules": rules,
+    }
 
 
 def build_rule_artifacts(
@@ -280,7 +543,7 @@ def build_rule_artifacts(
     """Build the summary text and downloadable attachment for a rule payload."""
 
     definitions = _iter_rule_definitions(rule_payload)
-    summaries = [_build_summary_for_definition(definition) for definition in definitions]
+    summary_payload = build_rule_summary_payload(rule_payload)
 
     attachment_headers: list[str] | None = None
     attachment_rows: list[dict[str, Any]] = []
@@ -307,8 +570,8 @@ def build_rule_artifacts(
             download_name=f"rule_{reference}_attachment.xlsx",
         )
 
-    summary = "\n".join(item for item in summaries if item).strip() or None
+    summary = json.dumps(summary_payload, ensure_ascii=False) if summary_payload["rules"] else None
     return summary, attachment_url
 
 
-__all__ = ["build_rule_artifacts"]
+__all__ = ["build_rule_artifacts", "build_rule_summary_payload"]

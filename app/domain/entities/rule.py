@@ -11,7 +11,7 @@ class Rule:
 
     id: int | None
     rule: dict[str, Any] | list[Any]
-    summary: str | None
+    summary: Any | None
     attachment: str | None
     created_by: int | None
     created_at: datetime | None

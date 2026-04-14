@@ -19,6 +19,7 @@ from app.application.use_cases.rules import (
     list_rules_by_creator as list_rules_by_creator_uc,
     update_rule as update_rule_uc,
 )
+from app.application.use_cases.rules.artifacts import build_rule_summary_payload
 from app.domain.entities import Rule, User
 from app.infrastructure.database import get_db
 from app.interfaces.api.dependencies import require_admin
@@ -451,7 +452,8 @@ def _sanitize_rule_definition(definition: Mapping[str, Any]) -> dict[str, Any]:
 
 def _to_read_model(rule: Rule) -> RuleRead:
     sanitized_rule = _sanitize_rule_payload(rule.rule)
-    sanitized_entity = replace(rule, rule=sanitized_rule)
+    summary_payload = build_rule_summary_payload(sanitized_rule)
+    sanitized_entity = replace(rule, rule=sanitized_rule, summary=summary_payload)
     if hasattr(RuleRead, "model_validate"):
         return RuleRead.model_validate(sanitized_entity)
     return RuleRead.from_orm(sanitized_entity)
