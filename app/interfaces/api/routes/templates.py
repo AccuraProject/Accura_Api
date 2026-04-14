@@ -60,7 +60,6 @@ from app.interfaces.api.schemas import (
     TemplateColumnRule as TemplateColumnRuleSchema,
     TemplateColumnUpdate,
     TemplateCreate,
-    TemplateDuplicate,
     TemplateRead,
     TemplateStatusUpdate,
     TemplateUpdate,
@@ -221,19 +220,15 @@ def register_template(
 )
 def duplicate_template(
     template_id: int,
-    payload: TemplateDuplicate,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ) -> TemplateRead:
-    """Duplica una plantilla existente con nuevos metadatos."""
+    """Duplica una plantilla existente usando solo el ``template_id``."""
 
     try:
         template = duplicate_template_uc(
             db,
             template_id=template_id,
-            name=payload.name,
-            table_name=payload.table_name,
-            description=payload.description,
             created_by=current_user.id,
         )
     except ValueError as exc:

@@ -2,6 +2,7 @@
 
 from sqlalchemy.orm import Session
 
+from app.application.use_cases.template_columns.artifacts import refresh_template_resources
 from app.application.use_cases.template_columns.validators import (
     ensure_rule_header_dependencies,
 )
@@ -14,29 +15,47 @@ from app.infrastructure.repositories import (
 )
 from app.utils import now_in_app_timezone
 
+_COPY_SUFFIX = "_Copy"
+_MAX_TEMPLATE_NAME_LENGTH = 50
+_MAX_TABLE_NAME_LENGTH = 63
+
+
+def _build_copy_value(value: str, *, max_length: int) -> str:
+    base_value = (value or "").strip()
+    allowed_base_length = max_length - len(_COPY_SUFFIX)
+    if allowed_base_length <= 0:
+        return _COPY_SUFFIX[:max_length]
+    return f"{base_value[:allowed_base_length]}{_COPY_SUFFIX}"
+
 
 def duplicate_template(
     session: Session,
     *,
     template_id: int,
-    name: str,
-    table_name: str,
-    description: str,
     created_by: int | None = None,
 ) -> Template:
-    """Duplicate ``template_id`` using the provided metadata for the new template."""
+    """Duplicate ``template_id`` reusing its metadata and columns."""
 
     template_repository = TemplateRepository(session)
     source_template = template_repository.get(template_id)
     if source_template is None:
         raise ValueError("Plantilla no encontrada")
 
+    duplicated_name = _build_copy_value(
+        source_template.name,
+        max_length=_MAX_TEMPLATE_NAME_LENGTH,
+    )
+    duplicated_table_name = _build_copy_value(
+        source_template.table_name,
+        max_length=_MAX_TABLE_NAME_LENGTH,
+    )
+
     duplicated_template = create_template(
         session,
         user_id=source_template.user_id,
-        name=name,
-        table_name=table_name,
-        description=description,
+        name=duplicated_name,
+        table_name=duplicated_table_name,
+        description=source_template.description,
         created_by=created_by,
     )
 
@@ -73,6 +92,11 @@ def duplicate_template(
     )
 
     column_repository.create_many(new_columns)
+    refresh_template_resources(
+        session,
+        duplicated_template.id,
+        actor_id=created_by,
+    )
 
     # Refresh the duplicated template so it includes the cloned columns.
     return template_repository.get(duplicated_template.id)
