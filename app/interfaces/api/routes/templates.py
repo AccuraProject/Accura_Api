@@ -57,7 +57,7 @@ from app.interfaces.api.schemas import (
     TemplateColumnBulkUpdate,
     TemplateColumnCreate,
     TemplateColumnRead,
-    TemplateColumnRule as TemplateColumnRuleSchema,
+    TemplateColumnRuleInput as TemplateColumnRuleSchema,
     TemplateColumnUpdate,
     TemplateCreate,
     TemplateRead,
