@@ -72,12 +72,6 @@ from app.interfaces.api.schemas import (
 router = APIRouter(prefix="/templates", tags=["templates"])
 
 
-def _template_to_read_model(template: Template) -> TemplateRead:
-    if hasattr(TemplateRead, "model_validate"):
-        return TemplateRead.model_validate(template)
-    return TemplateRead.from_orm(template)
-
-
 def _remove_file_safely(path: Path) -> None:
     try:
         path.unlink()
@@ -153,6 +147,14 @@ def _template_detail_to_read_model(
     return TemplateRead(**payload)
 
 
+def _template_to_read_model(
+    template: Template,
+    *,
+    rule_definitions: Mapping[int, Any] | None = None,
+) -> TemplateRead:
+    return _template_detail_to_read_model(template, rule_definitions or {})
+
+
 def _map_rule_payload(
     rules: list[TemplateColumnRuleSchema] | None,
 ) -> list[NewTemplateColumnRuleData] | None:
@@ -210,7 +212,11 @@ def register_template(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    return _template_to_read_model(template)
+    repository = TemplateRepository(db)
+    return _template_to_read_model(
+        template,
+        rule_definitions=repository.get_rule_payloads(template.id),
+    )
 
 
 @router.post(
@@ -238,7 +244,11 @@ def duplicate_template(
             status_code = status.HTTP_404_NOT_FOUND
         raise HTTPException(status_code=status_code, detail=detail) from exc
 
-    return _template_to_read_model(template)
+    repository = TemplateRepository(db)
+    return _template_to_read_model(
+        template,
+        rule_definitions=repository.get_rule_payloads(template.id),
+    )
 
 
 @router.get("/", response_model=list[TemplateRead])
@@ -253,7 +263,14 @@ def list_templates(
     templates = list_templates_uc(
         db, current_user=current_user, skip=skip, limit=limit
     )
-    return [_template_to_read_model(template) for template in templates]
+    repository = TemplateRepository(db)
+    return [
+        _template_to_read_model(
+            template,
+            rule_definitions=repository.get_rule_payloads(template.id),
+        )
+        for template in templates
+    ]
 
 
 @router.get("/users/{user_id}", response_model=list[TemplateRead])
@@ -280,7 +297,14 @@ def list_templates_for_user(
             ) from exc
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc
 
-    return [_template_to_read_model(template) for template in templates]
+    repository = TemplateRepository(db)
+    return [
+        _template_to_read_model(
+            template,
+            rule_definitions=repository.get_rule_payloads(template.id),
+        )
+        for template in templates
+    ]
 
 
 @router.get("/users/{user_id}/access", response_model=list[TemplateUserAccessRead])
@@ -427,7 +451,11 @@ def read_template(
         template = get_template_uc(db, template_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    return _template_to_read_model(template)
+    repository = TemplateRepository(db)
+    return _template_to_read_model(
+        template,
+        rule_definitions=repository.get_rule_payloads(template.id),
+    )
 
 
 @router.get("/{template_id}/detail", response_model=TemplateRead)
@@ -487,7 +515,11 @@ def update_template(
             status_code = status.HTTP_404_NOT_FOUND
         raise HTTPException(status_code=status_code, detail=detail) from exc
 
-    return _template_to_read_model(template)
+    repository = TemplateRepository(db)
+    return _template_to_read_model(
+        template,
+        rule_definitions=repository.get_rule_payloads(template.id),
+    )
 
 
 @router.patch("/{template_id}/status", response_model=TemplateRead)
@@ -513,7 +545,11 @@ def update_template_status(
             status_code = status.HTTP_404_NOT_FOUND
         raise HTTPException(status_code=status_code, detail=detail) from exc
 
-    return _template_to_read_model(template)
+    repository = TemplateRepository(db)
+    return _template_to_read_model(
+        template,
+        rule_definitions=repository.get_rule_payloads(template.id),
+    )
 
 
 @router.delete("/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
