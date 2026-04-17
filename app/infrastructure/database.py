@@ -161,14 +161,63 @@ def _ensure_rule_columns() -> None:
 
 def _sync_rule_statuses() -> None:
     """Backfill rule status for legacy data based on published template usage."""
+    inspector = inspect(engine)
+    table_names = {name.lower() for name in inspector.get_table_names()}
+    required_tables = {"rule", "template", "template_column", "template_column_rule"}
+    if not required_tables.issubset(table_names):
+        return
 
-    from app.infrastructure.repositories import RuleRepository
-
-    session = SessionLocal()
-    try:
-        RuleRepository(session).refresh_statuses()
-    finally:
-        session.close()
+    dialect = engine.dialect.name.lower()
+    with engine.begin() as connection:
+        if dialect == "mssql":
+            connection.execute(
+                text(
+                    """
+                    UPDATE r
+                    SET [status] = CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                            FROM [template_column_rule] tcr
+                            INNER JOIN [template_column] tc
+                                ON tc.[id] = tcr.[template_column_id]
+                            INNER JOIN [template] t
+                                ON t.[id] = tc.[template_id]
+                            WHERE tcr.[rule_id] = r.[id]
+                              AND tc.[deleted] = 0
+                              AND t.[deleted] = 0
+                              AND t.[status] = 'published'
+                        ) THEN 'asignada'
+                        ELSE 'borrador'
+                    END
+                    FROM [rule] r
+                    WHERE r.[deleted] = 0
+                    """
+                )
+            )
+        else:
+            connection.execute(
+                text(
+                    """
+                    UPDATE "rule" AS r
+                    SET "status" = CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                            FROM "template_column_rule" AS tcr
+                            INNER JOIN "template_column" AS tc
+                                ON tc."id" = tcr."template_column_id"
+                            INNER JOIN "template" AS t
+                                ON t."id" = tc."template_id"
+                            WHERE tcr."rule_id" = r."id"
+                              AND tc."deleted" = false
+                              AND t."deleted" = false
+                              AND t."status" = 'published'
+                        ) THEN 'asignada'
+                        ELSE 'borrador'
+                    END
+                    WHERE r."deleted" = false
+                    """
+                )
+            )
 
 
 def get_db() -> Generator:
