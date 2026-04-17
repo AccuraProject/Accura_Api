@@ -27,6 +27,7 @@ def create_rule(
     now = now_in_app_timezone()
     entity = Rule(
         id=None,
+        status="borrador",
         rule=rule,
         summary=summary,
         attachment=attachment,

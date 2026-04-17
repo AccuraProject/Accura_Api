@@ -1,6 +1,6 @@
 """SQLAlchemy model for validation rules."""
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
 from sqlalchemy.sql import expression
 from sqlalchemy.dialects.mssql import JSON as MSSQLJSON
 from sqlalchemy.dialects.postgresql import JSONB
@@ -20,6 +20,7 @@ class RuleModel(Base):
     __tablename__ = "rule"
 
     id = Column(Integer, primary_key=True, index=True)
+    status = Column(String(20), nullable=False, default="borrador")
     rule = Column(_rule_json_type, nullable=False)
     summary = Column(Text, nullable=True)
     attachment = Column(Text, nullable=True)

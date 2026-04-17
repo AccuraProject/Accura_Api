@@ -11,8 +11,12 @@ from sqlalchemy import desc, false
 from sqlalchemy.orm import Session
 
 from app.domain.entities import Rule
-from app.infrastructure.models import RuleModel
+from app.infrastructure.models import RuleModel, TemplateColumnModel, TemplateModel
+from app.infrastructure.models.template_column import template_column_rule_table
 from app.utils import ensure_app_naive_datetime, now_in_app_timezone
+
+RULE_STATUS_DRAFT = "borrador"
+RULE_STATUS_ASSIGNED = "asignada"
 
 
 class RuleRepository:
@@ -153,6 +157,7 @@ class RuleRepository:
     def _to_entity(model: RuleModel) -> Rule:
         return Rule(
             id=model.id,
+            status=model.status or RULE_STATUS_DRAFT,
             rule=model.rule,
             summary=model.summary,
             attachment=model.attachment,
@@ -205,6 +210,7 @@ class RuleRepository:
 
     @staticmethod
     def _apply_entity_to_model(model: RuleModel, rule: Rule) -> None:
+        model.status = rule.status
         model.rule = rule.rule
         model.summary = rule.summary
         model.attachment = rule.attachment
@@ -275,6 +281,59 @@ class RuleRepository:
         ascii_label = "".join(char for char in normalized if not unicodedata.combining(char))
         collapsed = re.sub(r"[\s\-_/]+", " ", ascii_label)
         return collapsed.lower().strip()
+
+    def refresh_statuses(self, rule_ids: Sequence[int] | None = None) -> None:
+        query = self.session.query(RuleModel).filter(RuleModel.deleted == false())
+        if rule_ids is not None:
+            normalized_ids = sorted({int(rule_id) for rule_id in rule_ids if rule_id})
+            if not normalized_ids:
+                return
+            query = query.filter(RuleModel.id.in_(normalized_ids))
+
+        models = query.all()
+        if not models:
+            return
+
+        assigned_ids = self._assigned_rule_ids(rule_ids=[model.id for model in models])
+        changed = False
+        for model in models:
+            expected_status = (
+                RULE_STATUS_ASSIGNED if model.id in assigned_ids else RULE_STATUS_DRAFT
+            )
+            if model.status != expected_status:
+                model.status = expected_status
+                self.session.add(model)
+                changed = True
+
+        if changed:
+            self.session.commit()
+
+    def _assigned_rule_ids(self, rule_ids: Sequence[int] | None = None) -> set[int]:
+        query = (
+            self.session.query(RuleModel.id)
+            .join(
+                template_column_rule_table,
+                template_column_rule_table.c.rule_id == RuleModel.id,
+            )
+            .join(
+                TemplateColumnModel,
+                TemplateColumnModel.id
+                == template_column_rule_table.c.template_column_id,
+            )
+            .join(TemplateModel, TemplateModel.id == TemplateColumnModel.template_id)
+            .filter(
+                RuleModel.deleted == false(),
+                TemplateColumnModel.deleted == false(),
+                TemplateModel.deleted == false(),
+                TemplateModel.status == "published",
+            )
+        )
+        if rule_ids is not None:
+            normalized_ids = sorted({int(rule_id) for rule_id in rule_ids if rule_id})
+            if not normalized_ids:
+                return set()
+            query = query.filter(RuleModel.id.in_(normalized_ids))
+        return {rule_id for (rule_id,) in query.distinct().all()}
 
 
 __all__ = ["RuleRepository"]

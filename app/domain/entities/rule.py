@@ -10,6 +10,7 @@ class Rule:
     """Core attributes describing a validation rule."""
 
     id: int | None
+    status: str
     rule: dict[str, Any] | list[Any]
     summary: Any | None
     attachment: str | None

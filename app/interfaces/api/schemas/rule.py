@@ -37,6 +37,7 @@ class RuleUpdate(BaseModel):
 
 class RuleRead(RuleBase):
     id: int
+    status: str
     summary: JSONObject | None
     attachment: str | None
     created_by: int | None

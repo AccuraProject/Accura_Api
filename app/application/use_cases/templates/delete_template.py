@@ -8,6 +8,7 @@ from app.infrastructure.template_files import delete_template_excel
 from app.infrastructure.repositories import (
     AuditLogRepository,
     DigitalFileRepository,
+    RuleRepository,
     TemplateRepository,
 )
 from app.utils import now_in_app_timezone
@@ -19,14 +20,22 @@ def delete_template(
     """Delete the template and its dynamic table if necessary."""
 
     repository = TemplateRepository(session)
+    rule_repository = RuleRepository(session)
     template = repository.get(template_id)
     if template is None:
         raise ValueError("Plantilla no encontrada")
+    affected_rule_ids = {
+        rule.id
+        for column in template.columns
+        for rule in column.rules
+    }
 
     digital_file_repository = DigitalFileRepository(session)
     existing_digital_file = digital_file_repository.get_by_template_id(template.id)
 
     repository.delete(template_id, deleted_by=deleted_by)
+    if affected_rule_ids:
+        rule_repository.refresh_statuses(affected_rule_ids)
 
     try:
         drop_template_table(template.table_name)

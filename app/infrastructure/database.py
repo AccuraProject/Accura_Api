@@ -118,6 +118,7 @@ def initialize_database() -> None:
 
     Base.metadata.create_all(bind=engine, checkfirst=True)
     _ensure_rule_columns()
+    _sync_rule_statuses()
 
 
 def _ensure_rule_columns() -> None:
@@ -140,6 +141,15 @@ def _ensure_rule_columns() -> None:
             statements.append("ALTER TABLE [rule] ADD [attachment] NVARCHAR(MAX) NULL")
         else:
             statements.append('ALTER TABLE "rule" ADD COLUMN "attachment" TEXT NULL')
+    if "status" not in existing_columns:
+        if dialect == "mssql":
+            statements.append(
+                "ALTER TABLE [rule] ADD [status] NVARCHAR(20) NOT NULL CONSTRAINT [DF_rule_status] DEFAULT 'borrador'"
+            )
+        else:
+            statements.append(
+                'ALTER TABLE "rule" ADD COLUMN "status" VARCHAR(20) NOT NULL DEFAULT \'borrador\''
+            )
 
     if not statements:
         return
@@ -147,6 +157,18 @@ def _ensure_rule_columns() -> None:
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
+
+
+def _sync_rule_statuses() -> None:
+    """Backfill rule status for legacy data based on published template usage."""
+
+    from app.infrastructure.repositories import RuleRepository
+
+    session = SessionLocal()
+    try:
+        RuleRepository(session).refresh_statuses()
+    finally:
+        session.close()
 
 
 def get_db() -> Generator:
