@@ -21,6 +21,8 @@ class TemplateColumnRule(BaseModel):
         serialization_alias="header rule",
     )
     rule: dict[str, Any] | list[Any] | None = None
+    summary: Any | None = None
+    attachment: str | None = None
 
     if ConfigDict is not None:  # pragma: no branch - runtime configuration
         model_config = ConfigDict(populate_by_name=True, from_attributes=True)

@@ -1,5 +1,6 @@
 """Persistence layer for templates."""
 
+import json
 from collections.abc import Sequence
 from typing import Any
 
@@ -185,7 +186,12 @@ class TemplateRepository:
 
     def get_rule_payloads(self, template_id: int) -> dict[int, Any]:
         rows = (
-            self.session.query(RuleModel.id, RuleModel.rule)
+            self.session.query(
+                RuleModel.id,
+                RuleModel.rule,
+                RuleModel.summary,
+                RuleModel.attachment,
+            )
             .join(
                 template_column_rule_table,
                 template_column_rule_table.c.rule_id == RuleModel.id,
@@ -201,8 +207,23 @@ class TemplateRepository:
             .all()
         )
         payloads: dict[int, Any] = {}
-        for rule_id, rule_payload in rows:
-            payloads[rule_id] = rule_payload
+        for rule_id, rule_payload, summary, attachment in rows:
+            parsed_summary: Any = summary
+            if isinstance(summary, str):
+                stripped_summary = summary.strip()
+                if not stripped_summary:
+                    parsed_summary = None
+                else:
+                    try:
+                        parsed_summary = json.loads(stripped_summary)
+                    except json.JSONDecodeError:
+                        parsed_summary = summary
+
+            payloads[rule_id] = {
+                "rule": rule_payload,
+                "summary": parsed_summary,
+                "attachment": attachment,
+            }
         return payloads
 
     @staticmethod

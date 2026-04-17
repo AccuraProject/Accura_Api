@@ -94,7 +94,13 @@ def _column_to_read_model(
         if rule.headers:
             entry["header rule"] = list(rule.headers)
         if rule_definitions and rule.id in rule_definitions:
-            entry["rule"] = rule_definitions[rule.id]
+            rule_payload = rule_definitions[rule.id]
+            if isinstance(rule_payload, Mapping):
+                entry["rule"] = rule_payload.get("rule")
+                entry["summary"] = rule_payload.get("summary")
+                entry["attachment"] = rule_payload.get("attachment")
+            else:
+                entry["rule"] = rule_payload
         rules_payload.append(entry)
 
     payload = {
