@@ -45,6 +45,20 @@ DEPENDENCY_TYPE_HEADERS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _infer_document_dependent_label(control_label: str) -> str | None:
+    normalized = _normalize_label(control_label)
+    if "tipo de documento" not in normalized:
+        return None
+
+    candidate = re.sub(
+        r"(?i)tipo\s+de\s+documento",
+        "Número de documento",
+        control_label,
+        count=1,
+    ).strip()
+    return candidate or None
+
+
 class AssistantMessageResponse(BaseModel):
     """Structured response describing a single validation rule."""
 
@@ -347,6 +361,7 @@ class AssistantMessageResponse(BaseModel):
             dependent_label_reference: str | None = None
             normalized_dependent_reference: str | None = None
             expected_headers: set[str] = set()
+            should_promote_document_dependency = False
             property_dependency_types = {
                 "texto",
                 "numero",
@@ -587,6 +602,8 @@ class AssistantMessageResponse(BaseModel):
 
                 dependent_label = dependent_labels[0]
                 normalized_dependent = _normalize_label(dependent_label)
+                if "tipo de documento" in normalized_dependent:
+                    should_promote_document_dependency = True
 
                 if dependent_label_reference is None:
                     dependent_label_reference = dependent_label
@@ -608,6 +625,8 @@ class AssistantMessageResponse(BaseModel):
                 normalized_candidate = _normalize_label(candidate)
                 if normalized_candidate == normalized_dependent_reference:
                     continue
+                if normalized_candidate in DEPENDENCY_TYPE_HEADERS:
+                    continue
                 dependent_target_label = header_lookup.get(
                     normalized_candidate, candidate
                 )
@@ -618,11 +637,34 @@ class AssistantMessageResponse(BaseModel):
                     normalized_candidate = _normalize_label(candidate)
                     if normalized_candidate == normalized_dependent_reference:
                         continue
+                    if normalized_candidate in {
+                        _normalize_label(label)
+                        for labels in DEPENDENCY_TYPE_HEADERS.values()
+                        for label in labels
+                    }:
+                        continue
                     dependent_target_label = candidate
                     break
 
             if dependent_target_label is None:
+                if should_promote_document_dependency and dependent_label_reference is not None:
+                    inferred_document_label = _infer_document_dependent_label(
+                        dependent_label_reference
+                    )
+                    if inferred_document_label:
+                        dependent_target_label = inferred_document_label
+
+            if dependent_target_label is None:
                 dependent_target_label = dependent_label_reference
+
+            if dependent_label_reference is not None:
+                if not self.header_rule:
+                    self.header_rule = [dependent_label_reference, dependent_target_label]
+                elif len(self.header_rule) == 1:
+                    self.header_rule.append(dependent_target_label)
+                else:
+                    self.header_rule[0] = dependent_label_reference
+                    self.header_rule[1] = dependent_target_label
 
             if include_dependent_target_in_header:
                 expected_headers.add(dependent_target_label)
@@ -667,6 +709,26 @@ class AssistantMessageResponse(BaseModel):
                     break
 
                 remapped_specifics.append(transformed_entry)
+
+            if should_promote_document_dependency:
+                promoted_specifics: list[Any] = []
+                for entrada in remapped_specifics:
+                    if not isinstance(entrada, dict):
+                        promoted_specifics.append(entrada)
+                        continue
+
+                    promoted_entry: dict[str, Any] = {}
+                    for key, value in entrada.items():
+                        if (
+                            isinstance(key, str)
+                            and _normalize_label(key) == "texto"
+                            and isinstance(value, dict)
+                        ):
+                            promoted_entry["Documento"] = value
+                            continue
+                        promoted_entry[key] = value
+                    promoted_specifics.append(promoted_entry)
+                remapped_specifics = promoted_specifics
 
             self.regla = dict(self.regla)
             self.regla["reglas especifica"] = remapped_specifics

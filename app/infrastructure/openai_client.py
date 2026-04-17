@@ -972,6 +972,11 @@ class StructuredChatService:
             "formularios. Debes responder con un JSON que cumpla EXACTAMENTE con el esquema 'Regla de Campo' y "
             "definir todas las propiedades requeridas. Cuando definas reglas del tipo 'Dependencia', omite la "
             "propiedad 'Nombre dependiente'. "
+            "El campo 'Nombre de la regla' debe ser siempre conciso y seguir este patrón: "
+            "'Validación [tipo de regla] [campo/campos] [característica principal]'. "
+            "Mantén el texto corto, evita frases largas como 'según...' o descripciones completas, y conserva el "
+            "tipo de regla exactamente como aparece en 'Tipo de dato'. Si una regla reciente ya usa un nombre muy "
+            "parecido, parafrasea el resto del nombre sin cambiar el tipo de regla. "
 
             "REGLAS PARA 'Header' Y 'Header rule' EN DEPENDENCIAS: "
             "1) Identifica siempre dos cosas: la columna condicionante (por ejemplo, 'Tipo Documento') y la columna dependiente "

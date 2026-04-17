@@ -221,6 +221,104 @@ def _humanize_value(value: Any) -> str:
     return _safe_text(value) or "No definido"
 
 
+def _join_readable_values(values: Sequence[Any], *, limit: int = 5) -> str:
+    readable = [_safe_text(value) for value in values if _safe_text(value)]
+    if not readable:
+        return "No definido"
+    preview = ", ".join(readable[:limit])
+    if len(readable) > limit:
+        preview += ", ..."
+    return preview
+
+
+def _append_main_parameter(
+    container: list[dict[str, str]],
+    *,
+    key: str,
+    value: Any,
+) -> None:
+    normalized_key = _safe_text(key)
+    if not normalized_key:
+        return
+    container.append(
+        {
+            "key": normalized_key,
+            "value": _humanize_value(value),
+        }
+    )
+
+
+def _build_homologated_main_parameters(
+    *,
+    rule_type: str,
+    rule_block: Any,
+    interpreted_config: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    normalized_type = _normalize_label(rule_type)
+    parameters: list[dict[str, str]] = []
+
+    if normalized_type == "lista":
+        allowed_values = interpreted_config.get("allowed_values")
+        if isinstance(allowed_values, Sequence) and not isinstance(allowed_values, (str, bytes)):
+            _append_main_parameter(
+                parameters,
+                key="Valores permitidos",
+                value=_join_readable_values(allowed_values),
+            )
+            _append_main_parameter(
+                parameters,
+                key="Cantidad de valores",
+                value=len(allowed_values),
+            )
+        return parameters
+
+    if normalized_type in {"lista compleja", "lista completa"}:
+        combination_headers = interpreted_config.get("combination_headers")
+        combinations_count = interpreted_config.get("combinations_count")
+        if isinstance(combination_headers, Sequence) and not isinstance(
+            combination_headers, (str, bytes)
+        ):
+            _append_main_parameter(
+                parameters,
+                key="Campos de combinación",
+                value=_join_readable_values(combination_headers),
+            )
+        if combinations_count is not None:
+            _append_main_parameter(
+                parameters,
+                key="Cantidad de combinaciones",
+                value=combinations_count,
+            )
+        return parameters
+
+    if normalized_type == "dependencia":
+        control_fields = interpreted_config.get("control_fields")
+        scenarios_count = interpreted_config.get("scenarios_count")
+        if isinstance(control_fields, Sequence) and not isinstance(control_fields, (str, bytes)):
+            _append_main_parameter(
+                parameters,
+                key="Campos de control",
+                value=_join_readable_values(control_fields),
+            )
+        if scenarios_count is not None:
+            _append_main_parameter(
+                parameters,
+                key="Escenarios configurados",
+                value=scenarios_count,
+            )
+        return parameters
+
+    if isinstance(rule_block, Mapping):
+        for key, value in rule_block.items():
+            if not isinstance(key, str):
+                continue
+            if isinstance(value, (Mapping, list, tuple, set)):
+                continue
+            _append_main_parameter(parameters, key=key, value=value)
+
+    return parameters
+
+
 def _collect_configuration_items(
     value: Any,
     *,
@@ -458,17 +556,6 @@ def _build_summary_for_definition(definition: Mapping[str, Any]) -> dict[str, An
                     f"Escenarios condicionales configurados: {interpreted_config['scenarios_count']}."
                 )
         else:
-            interpreted_config = {
-                "main_parameters": [
-                    {
-                        "key": key,
-                        "value": _safe_text(value),
-                    }
-                    for key, value in rule_block.items()
-                    if isinstance(key, str)
-                    and not isinstance(value, (Mapping, list, tuple, set))
-                ]
-            }
             detail_parts = [
                 {
                     "key": key,
@@ -485,6 +572,15 @@ def _build_summary_for_definition(definition: Mapping[str, Any]) -> dict[str, An
                 readable_details.append(
                     f"Parámetros directos configurados: {len(detail_parts)}."
                 )
+
+    interpreted_config = {
+        **interpreted_config,
+        "main_parameters": _build_homologated_main_parameters(
+            rule_type=rule_type,
+            rule_block=rule_block,
+            interpreted_config=interpreted_config,
+        ),
+    }
 
     user_examples = _build_user_examples(
         rule_type=rule_type,
@@ -525,14 +621,12 @@ def _build_summary_for_definition(definition: Mapping[str, Any]) -> dict[str, An
 
 def build_rule_summary_payload(
     rule_payload: dict[str, Any] | list[Any],
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     definitions = _iter_rule_definitions(rule_payload)
     rules = [_build_summary_for_definition(definition) for definition in definitions]
-    return {
-        "version": 1,
-        "rule_count": len(rules),
-        "rules": rules,
-    }
+    if not rules:
+        return None
+    return rules[0]
 
 
 def build_rule_artifacts(
@@ -570,7 +664,7 @@ def build_rule_artifacts(
             download_name=f"rule_{reference}_attachment.xlsx",
         )
 
-    summary = json.dumps(summary_payload, ensure_ascii=False) if summary_payload["rules"] else None
+    summary = json.dumps(summary_payload, ensure_ascii=False) if summary_payload else None
     return summary, attachment_url
 
 

@@ -210,6 +210,27 @@ _VAGUE_RULE_MARKERS = (
     "segun corresponda",
 )
 
+_RULE_NAME_PARAPHRASE_TEMPLATES: tuple[str, ...] = (
+    "Validación {type} {fields} {focus}",
+    "Validación {type} {fields} con {focus}",
+    "Validación {type} {fields} por {focus}",
+    "Validación {type} {focus} en {fields}",
+)
+
+_RULE_NAME_FOCUS_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "longitud": ("tamano", "extension"),
+    "rango": ("limites", "valor permitido"),
+    "formato": ("estructura", "patron"),
+    "valores permitidos": ("opciones validas", "lista permitida"),
+    "combinaciones permitidas": ("combinaciones validas", "relacion permitida"),
+    "unicidad": ("no repetidos", "valor unico"),
+    "consistencia": ("coherencia", "relacion esperada"),
+    "condicion": ("regla condicional", "criterio dependiente"),
+    "longitud condicional": ("tamano condicional", "extension condicional"),
+    "rango condicional": ("limites condicionales", "valor condicionado"),
+    "formato condicional": ("estructura condicional", "patron condicionado"),
+}
+
 
 def _normalize_label(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", str(value))
@@ -834,35 +855,8 @@ def _remap_dependency_list_specifics(
     return updated_block
 
 
-def _extract_dependency_header_from_specific(rule_block: Mapping[str, Any]) -> list[str]:
-    """Derive header labels from the first dependency-specific block."""
-
-    specifics = rule_block.get("reglas especifica")
-    if not isinstance(specifics, Sequence) or not specifics:
-        return []
-
-    first_entry = specifics[0]
-    if not isinstance(first_entry, Mapping):
-        return []
-
-    headers: list[str] = []
-    for key, value in first_entry.items():
-        if not isinstance(key, str) or not key.strip():
-            continue
-
-        if isinstance(value, Mapping):
-            for nested_key in value.keys():
-                if isinstance(nested_key, str) and nested_key.strip():
-                    headers.append(nested_key.strip())
-            continue
-
-        headers.append(key.strip())
-
-    return _deduplicate_headers(headers)
-
-
 def _sanitize_dependency_header(raw_response: Any) -> Any:
-    """Replace dependency headers with the labels inferred from specifics."""
+    """Normalize dependency headers based on the actual rule structure."""
 
     if not isinstance(raw_response, Mapping):
         return raw_response
@@ -875,12 +869,270 @@ def _sanitize_dependency_header(raw_response: Any) -> Any:
     if not isinstance(rule_block, Mapping):
         return raw_response
 
-    inferred_headers = _extract_dependency_header_from_specific(rule_block)
-    if not inferred_headers:
+    payload = dict(raw_response)
+    payload["Regla"] = rule_block
+
+    inferred_header_rule = _infer_header_rule(payload)
+    inferred_headers = _generate_dependency_headers(payload)
+
+    if not inferred_headers and not inferred_header_rule:
         return raw_response
 
     sanitized = dict(raw_response)
-    sanitized["Header"] = inferred_headers
+    if inferred_header_rule:
+        sanitized["Header rule"] = inferred_header_rule
+    if inferred_headers:
+        sanitized["Header"] = inferred_headers
+    return sanitized
+
+
+def _extract_existing_rule_names(rules_catalog: Sequence[Mapping[str, Any]]) -> set[str]:
+    existing_names: set[str] = set()
+
+    for group in rules_catalog:
+        if not isinstance(group, Mapping):
+            continue
+        entries = group.get("Reglas")
+        if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            name = entry.get("Nombre de la regla")
+            if isinstance(name, str) and name.strip():
+                existing_names.add(name.strip())
+
+    return existing_names
+
+
+def _build_rule_field_candidates(payload: Mapping[str, Any]) -> list[str]:
+    type_aliases = {
+        _normalize_label(alias) for alias in _DEPENDENCY_TYPE_ALIASES.values()
+    }
+    parameter_aliases = {
+        _normalize_label(label)
+        for labels in (
+            ("Longitud mínima", "Longitud máxima"),
+            ("Valor mínimo", "Valor máximo", "Número de decimales"),
+            ("Formato", "Fecha mínima", "Fecha máxima"),
+            ("Código de país",),
+            ("Lista", "Lista compleja"),
+            ("Campos", "Columnas", "Nombre de campos"),
+        )
+        for label in labels
+    }
+
+    candidates = _deduplicate_headers(
+        _extract_header_entries(payload.get("Header rule"))
+        or _extract_header_entries(payload.get("Header"))
+    )
+
+    filtered: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = _normalize_label(candidate)
+        if normalized in type_aliases or normalized in parameter_aliases:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        filtered.append(candidate.strip())
+
+    if filtered:
+        return filtered[:3]
+
+    fallback_candidates: list[str] = []
+    quoted_sources = [
+        payload.get("Descripción"),
+        payload.get("Mensaje de error"),
+        payload.get("Nombre de la regla"),
+    ]
+    for source in quoted_sources:
+        if not isinstance(source, str):
+            continue
+        fallback_candidates.extend(_extract_quoted_labels(source))
+
+    ejemplo = payload.get("Ejemplo")
+    if isinstance(ejemplo, Mapping):
+        for key in ejemplo.keys():
+            if isinstance(key, str) and key.strip():
+                fallback_candidates.append(key.strip())
+        for value in ejemplo.values():
+            if isinstance(value, Mapping):
+                for key in value.keys():
+                    if isinstance(key, str) and key.strip():
+                        fallback_candidates.append(key.strip())
+            elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                for item in value:
+                    if isinstance(item, Mapping):
+                        for key in item.keys():
+                            if isinstance(key, str) and key.strip():
+                                fallback_candidates.append(key.strip())
+
+    for candidate in fallback_candidates:
+        normalized = _normalize_label(candidate)
+        if normalized in type_aliases or normalized in parameter_aliases:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        filtered.append(candidate.strip())
+
+    if filtered:
+        return filtered[:3]
+
+    tipo = payload.get("Tipo de dato")
+    if isinstance(tipo, str) and tipo.strip():
+        return [tipo.strip()]
+    return ["campo"]
+
+
+def _format_rule_fields_label(fields: Sequence[str]) -> str:
+    cleaned = [field.strip() for field in fields if isinstance(field, str) and field.strip()]
+    if not cleaned:
+        return "campo"
+    if len(cleaned) == 1:
+        return cleaned[0]
+    if len(cleaned) == 2:
+        return f"{cleaned[0]} y {cleaned[1]}"
+    return f"{cleaned[0]}, {cleaned[1]} y {cleaned[2]}"
+
+
+def _infer_rule_focus(payload: Mapping[str, Any]) -> str:
+    tipo = payload.get("Tipo de dato")
+    regla = payload.get("Regla")
+    normalized_type = _normalize_label(tipo) if isinstance(tipo, str) else ""
+
+    if normalized_type == "texto":
+        return "longitud"
+    if normalized_type == "numero":
+        return "rango"
+    if normalized_type == "documento":
+        return "longitud"
+    if normalized_type == "lista":
+        return "valores permitidos"
+    if normalized_type == "lista compleja":
+        return "combinaciones permitidas"
+    if normalized_type == "telefono":
+        return "formato"
+    if normalized_type == "correo":
+        return "formato"
+    if normalized_type == "fecha":
+        return "formato"
+    if normalized_type == "duplicados":
+        return "unicidad"
+    if normalized_type == "validacion conjunta":
+        return "consistencia"
+    if normalized_type != "dependencia" or not isinstance(regla, Mapping):
+        return "condicion"
+
+    specifics = regla.get("reglas especifica")
+    if not isinstance(specifics, Sequence) or isinstance(specifics, (str, bytes)):
+        return "condicion"
+
+    has_list = False
+    focus_by_type: str | None = None
+    for entry in specifics:
+        if not isinstance(entry, Mapping):
+            continue
+        for key, value in entry.items():
+            if not isinstance(key, str):
+                continue
+            normalized_key = _normalize_label(key)
+            if normalized_key == "lista":
+                has_list = True
+            if normalized_key in {"texto", "documento"} and isinstance(value, Mapping):
+                focus_by_type = "longitud condicional"
+            elif normalized_key == "numero" and isinstance(value, Mapping):
+                focus_by_type = "rango condicional"
+            elif normalized_key in {"telefono", "correo", "fecha"} and isinstance(value, Mapping):
+                focus_by_type = "formato condicional"
+
+            if isinstance(value, Mapping):
+                for nested_key, nested_value in value.items():
+                    if not isinstance(nested_key, str):
+                        continue
+                    if isinstance(nested_value, list):
+                        has_list = True
+
+    if focus_by_type:
+        return focus_by_type
+    if has_list:
+        return "valores permitidos"
+    return "condicion"
+
+
+def _compress_spaces(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _compose_rule_name(type_label: str, fields_label: str, focus: str, template: str) -> str:
+    return _compress_spaces(
+        template.format(
+            type=type_label.strip(),
+            fields=fields_label.strip(),
+            focus=focus.strip(),
+        )
+    )
+
+
+def _build_rule_name_variants(type_label: str, fields_label: str, focus: str) -> list[str]:
+    variants: list[str] = []
+    seen: set[str] = set()
+
+    def add(candidate: str) -> None:
+        normalized = _normalize_label(candidate)
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        variants.append(candidate)
+
+    for template in _RULE_NAME_PARAPHRASE_TEMPLATES:
+        add(_compose_rule_name(type_label, fields_label, focus, template))
+
+    for synonym in _RULE_NAME_FOCUS_SYNONYMS.get(_normalize_label(focus), ()):
+        for template in _RULE_NAME_PARAPHRASE_TEMPLATES:
+            add(_compose_rule_name(type_label, fields_label, synonym, template))
+
+    add(_compress_spaces(f"Validación {type_label} {fields_label} específica"))
+    add(_compress_spaces(f"Validación {type_label} {fields_label} aplicada"))
+    return variants
+
+
+def _normalize_rule_name(
+    raw_response: Any,
+    existing_rule_names: Sequence[str] | None = None,
+) -> Any:
+    if not isinstance(raw_response, Mapping):
+        return raw_response
+
+    tipo = raw_response.get("Tipo de dato")
+    if not isinstance(tipo, str) or not tipo.strip():
+        return raw_response
+
+    fields_label = _format_rule_fields_label(_build_rule_field_candidates(raw_response))
+    focus = _infer_rule_focus(raw_response)
+    variants = _build_rule_name_variants(tipo.strip(), fields_label, focus)
+    if not variants:
+        return raw_response
+
+    existing_normalized = {
+        _normalize_label(name)
+        for name in (existing_rule_names or [])
+        if isinstance(name, str) and name.strip()
+    }
+    original_name = raw_response.get("Nombre de la regla")
+    if isinstance(original_name, str) and original_name.strip():
+        existing_normalized.discard(_normalize_label(original_name))
+
+    selected_name = variants[0]
+    for candidate in variants:
+        if _normalize_label(candidate) not in existing_normalized:
+            selected_name = candidate
+            break
+
+    sanitized = dict(raw_response)
+    sanitized["Nombre de la regla"] = selected_name
     return sanitized
 
 
@@ -1074,6 +1326,10 @@ def analyze_message(
         )
         logger.debug("Respuesta sin validar del asistente: %s", raw_response)
         raw_response = _sanitize_dependency_header(raw_response)
+        raw_response = _normalize_rule_name(
+            raw_response,
+            existing_rule_names=_extract_existing_rule_names(serialized_rules),
+        )
     except OffTopicMessageError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
