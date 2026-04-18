@@ -211,10 +211,10 @@ _VAGUE_RULE_MARKERS = (
 )
 
 _RULE_NAME_PARAPHRASE_TEMPLATES: tuple[str, ...] = (
-    "Validación {type} {fields} {focus}",
-    "Validación {type} {fields} con {focus}",
-    "Validación {type} {fields} por {focus}",
-    "Validación {type} {focus} en {fields}",
+    "Validación de {type} de {fields} por {focus}",
+    "Validación de {type} en {fields} con {focus}",
+    "Validación de {type} para {fields} por {focus}",
+    "Validación de {type} sobre {fields} con {focus}",
 )
 
 _RULE_NAME_FOCUS_SYNONYMS: dict[str, tuple[str, ...]] = {
@@ -998,6 +998,14 @@ def _format_rule_fields_label(fields: Sequence[str]) -> str:
     return f"{cleaned[0]}, {cleaned[1]} y {cleaned[2]}"
 
 
+def _to_sentence_case(value: str) -> str:
+    collapsed = _compress_spaces(value)
+    if not collapsed:
+        return collapsed
+    lowered = collapsed.lower()
+    return lowered[0].upper() + lowered[1:]
+
+
 def _infer_rule_focus(payload: Mapping[str, Any]) -> str:
     tipo = payload.get("Tipo de dato")
     regla = payload.get("Regla")
@@ -1067,7 +1075,7 @@ def _compress_spaces(value: str) -> str:
 
 
 def _compose_rule_name(type_label: str, fields_label: str, focus: str, template: str) -> str:
-    return _compress_spaces(
+    return _to_sentence_case(
         template.format(
             type=type_label.strip(),
             fields=fields_label.strip(),
@@ -1094,8 +1102,8 @@ def _build_rule_name_variants(type_label: str, fields_label: str, focus: str) ->
         for template in _RULE_NAME_PARAPHRASE_TEMPLATES:
             add(_compose_rule_name(type_label, fields_label, synonym, template))
 
-    add(_compress_spaces(f"Validación {type_label} {fields_label} específica"))
-    add(_compress_spaces(f"Validación {type_label} {fields_label} aplicada"))
+    add(_to_sentence_case(f"Validación de {type_label} de {fields_label} específica"))
+    add(_to_sentence_case(f"Validación de {type_label} de {fields_label} aplicada"))
     return variants
 
 
