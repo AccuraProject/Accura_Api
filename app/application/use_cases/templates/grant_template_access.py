@@ -91,6 +91,12 @@ def _normalize_date(
 def _validate_access_window(start: datetime, end: datetime | None) -> None:
     """Validate that the configured access window is chronological."""
 
+    today_start = _current_day_start()
+    if start < today_start:
+        raise ValueError(
+            "El rango de fechas no es válido: la fecha de inicio debe ser"
+            " posterior o igual a la fecha actual"
+        )
     if end is not None and end < start:
         raise ValueError(
             "El rango de fechas no es válido: la fecha de fin debe ser"
