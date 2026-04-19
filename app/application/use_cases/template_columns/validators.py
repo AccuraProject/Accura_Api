@@ -14,6 +14,7 @@ from app.infrastructure.repositories import RuleRepository
 
 _RULE_TYPES_REQUIRING_HEADER_FIELD = {"lista compleja", "lista completa"}
 _RULE_TYPES_REQUIRING_COLUMN_HEADER = {"lista compleja", "lista completa", "dependencia"}
+_ASSIGNMENT_HEADER_RULE_TYPES = {"lista compleja", "lista completa", "dependencia"}
 _RULE_TYPES_WITH_REQUIRED_HEADERS = {
     "lista compleja",
     "lista completa",
@@ -58,7 +59,7 @@ class _RuleHeaderValidationResult:
     rule_name: str
     required_headers: tuple[str, ...]
     normalized_required_headers: tuple[str, ...]
-    column_type: str
+    rule_type: str
     requires_column_header: bool
 
 
@@ -231,6 +232,15 @@ def _infer_header_rule(definition: Mapping[str, Any]) -> list[str]:
     return []
 
 
+def _rule_payload_uses_assignment_header(rule_payload: Any) -> bool:
+    definitions = _iter_rule_definitions(rule_payload)
+    for definition in definitions:
+        rule_type = _normalize_type_label(definition.get("Tipo de dato", ""))
+        if rule_type in _ASSIGNMENT_HEADER_RULE_TYPES:
+            return True
+    return False
+
+
 def _build_available_labels(columns: Sequence[TemplateColumn]) -> list[_ColumnLabel]:
     labels: list[_ColumnLabel] = []
     for column in columns:
@@ -389,6 +399,7 @@ def _validate_column_headers_for_rule(
     requires_column_header = False
     skip_header_enforcement = True
     column_type = _normalize_type_label(column.data_type)
+    validated_rule_type = column_type
     header_rules_by_type: dict[str, list[str]] = {}
     rule_names_by_type: dict[str, str] = {}
 
@@ -399,10 +410,12 @@ def _validate_column_headers_for_rule(
             header_rule_values = _infer_header_rule(definition)
         if rule_type in _HEADER_ENFORCEMENT_RULE_TYPES:
             skip_header_enforcement = False
+            validated_rule_type = rule_type
         if header_rule_values:
             allows_column_header = True
             if rule_type in _RULE_TYPES_WITH_REQUIRED_HEADERS:
                 requires_column_header = True
+                validated_rule_type = rule_type
                 existing = header_rules_by_type.setdefault(rule_type, [])
                 existing_normalized = {
                     _normalize_type_label(value) for value in existing
@@ -479,11 +492,11 @@ def _validate_column_headers_for_rule(
             "La columna '"
             + column.name
             + "' debe indicar su 'header rule' para la regla '"
-            + rule_names_by_type.get(column_type, column.name)
+            + rule_names_by_type.get(validated_rule_type, column.name)
             + "'."
         )
 
-    required_headers = header_rules_by_type.get(column_type, [])
+    required_headers = header_rules_by_type.get(validated_rule_type, [])
     normalized_required = [
         _normalize_type_label(value) for value in required_headers
     ]
@@ -495,7 +508,7 @@ def _validate_column_headers_for_rule(
             if normalized not in normalized_required
         ]
         if invalid_assignments:
-            rule_name = rule_names_by_type.get(column_type, column.name)
+            rule_name = rule_names_by_type.get(validated_rule_type, column.name)
             invalid_str = ", ".join(sorted(set(invalid_assignments)))
             raise ValueError(
                 "Los 'header rule' configurados para la columna '"
@@ -513,7 +526,7 @@ def _validate_column_headers_for_rule(
             if not _header_matches(header, labels)
         ]
         if missing_columns:
-            rule_name = rule_names_by_type.get(column_type, column.name)
+            rule_name = rule_names_by_type.get(validated_rule_type, column.name)
             missing_str = ", ".join(sorted(set(missing_columns)))
             raise ValueError(
                 "La regla '"
@@ -535,12 +548,12 @@ def _validate_column_headers_for_rule(
                 f"Los 'header rule' configurados para la columna '{column.name}' requieren que la plantilla incluya las columnas {missing_str}."
             )
 
-    rule_name = rule_names_by_type.get(column_type, column.name)
+    rule_name = rule_names_by_type.get(validated_rule_type, column.name)
     return _RuleHeaderValidationResult(
         rule_name=rule_name,
         required_headers=tuple(required_headers),
         normalized_required_headers=tuple(normalized_required),
-        column_type=column_type,
+        rule_type=validated_rule_type,
         requires_column_header=requires_column_header,
     )
 
@@ -572,17 +585,6 @@ def ensure_rule_header_dependencies(
 
         for assignment in column.rules:
             rule_id = assignment.id
-            headers = normalize_rule_header(assignment.headers)
-            header_values = list(headers) if headers else []
-            if len(header_values) > 1:
-                raise ValueError(
-                    f"La columna '{column.name}' solo puede definir un 'header rule' por cada regla asignada."
-                )
-
-            normalized_header_values = {
-                _normalize_type_label(value): value for value in header_values
-            }
-
             cached = rule_cache.get(rule_id)
             if cached is None:
                 fetched = rule_repository.get(rule_id)
@@ -595,6 +597,20 @@ def ensure_rule_header_dependencies(
             else:
                 rule_payload = cached.rule
 
+            headers = normalize_rule_header(assignment.headers)
+            if _rule_payload_uses_assignment_header(rule_payload):
+                header_values = list(headers) if headers else []
+                if len(header_values) > 1:
+                    raise ValueError(
+                        f"La columna '{column.name}' solo puede definir un 'header rule' por cada regla asignada."
+                    )
+            else:
+                header_values = []
+
+            normalized_header_values = {
+                _normalize_type_label(value): value for value in header_values
+            }
+
             result = _validate_column_headers_for_rule(
                 column=column,
                 header_values=header_values,
@@ -603,7 +619,7 @@ def ensure_rule_header_dependencies(
                 rule_payload=rule_payload,
             )
 
-            key = (rule_id, result.column_type)
+            key = (rule_id, result.rule_type)
             stored = validation_results.get(key)
             if stored is None:
                 validation_results[key] = result

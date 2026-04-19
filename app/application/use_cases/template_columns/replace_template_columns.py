@@ -8,15 +8,18 @@ from sqlalchemy.orm import Session
 
 from app.domain.entities import TemplateColumn
 from app.infrastructure.repositories import (
+    RuleRepository,
     TemplateColumnRepository,
     TemplateRepository,
 )
 
 from .create_template_column import (
     NewTemplateColumnData,
+    _build_column,
     create_template_columns,
 )
 from .artifacts import refresh_template_resources
+from .validators import ensure_rule_header_dependencies
 
 
 def replace_template_columns(
@@ -46,6 +49,28 @@ def replace_template_columns(
     existing_columns = list(column_repository.list_by_template(template_id))
     if not columns:
         return existing_columns
+
+    rule_repository = RuleRepository(session)
+    forbidden_names: set[str] = set()
+    forbidden_identifiers: set[str] = set()
+    validated_columns: list[TemplateColumn] = []
+
+    for payload in columns:
+        validated_columns.append(
+            _build_column(
+                template_id=template_id,
+                payload=payload,
+                created_by=actor_id,
+                forbidden_names=forbidden_names,
+                forbidden_identifiers=forbidden_identifiers,
+                rule_repository=rule_repository,
+            )
+        )
+
+    ensure_rule_header_dependencies(
+        columns=validated_columns,
+        rule_repository=rule_repository,
+    )
 
     for column in existing_columns:
         column_repository.delete(column.id, deleted_by=actor_id)

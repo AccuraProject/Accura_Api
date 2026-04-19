@@ -59,8 +59,6 @@ _DEPENDENCY_TYPE_ALIASES: set[str] = {
     "correo",
     "fecha",
 }
-
-
 def _normalize_label(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", str(value))
     ascii_text = "".join(char for char in normalized if not unicodedata.combining(char))
@@ -86,8 +84,6 @@ def _ensure_supported_type(type_label: str) -> tuple[str, str]:
         msg = "Tipo de dato no soportado."
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
     return normalized, canonical
-
-
 def _sanitize_text(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()

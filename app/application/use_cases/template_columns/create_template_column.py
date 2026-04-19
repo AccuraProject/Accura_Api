@@ -23,6 +23,9 @@ from .naming import derive_column_identifier, normalize_column_display_name
 from .validators import ensure_rule_header_dependencies
 
 
+_ASSIGNMENT_HEADER_RULE_TYPES = {"lista compleja", "lista completa", "dependencia"}
+
+
 @dataclass(frozen=True)
 class NewTemplateColumnRuleData:
     """Information linking a column to a rule during creation."""
@@ -204,11 +207,6 @@ def _prepare_rule_assignments(
         rule_id = _normalize_rule_id(assignment.id)
         headers = _normalize_header_values(assignment.header_rule)
 
-        normalized_assignment = (rule_id, headers)
-        if normalized_assignment in seen_assignments:
-            continue
-        seen_assignments.add(normalized_assignment)
-
         rule = rule_cache.get(rule_id)
         if rule is None:
             rule = rule_repository.get(rule_id)
@@ -230,6 +228,14 @@ def _prepare_rule_assignments(
             raise ValueError(str(exc)) from exc
 
         normalized_label = _normalize_type_label(canonical_type)
+        if normalized_label not in _ASSIGNMENT_HEADER_RULE_TYPES:
+            headers = None
+
+        normalized_assignment = (rule_id, headers)
+        if normalized_assignment in seen_assignments:
+            continue
+        seen_assignments.add(normalized_assignment)
+
         if normalized_label in {"lista compleja", "lista completa", "dependencia"}:
             if not headers:
                 raise ValueError(
