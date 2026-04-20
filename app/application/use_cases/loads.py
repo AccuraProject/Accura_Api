@@ -153,9 +153,6 @@ def upload_template_load(
     if not columns:
         raise ValueError("La plantilla no tiene columnas activas para importar")
 
-    if not file_bytes:
-        raise ValueError("El archivo proporcionado está vacío")
-
     load_repo = LoadRepository(session)
     now = now_in_app_timezone()
     load = load_repo.create(
@@ -216,6 +213,7 @@ def process_template_load(
     try:
         dataframe = _read_source_file(file_bytes, suffix)
         dataframe = _normalize_dataframe(dataframe)
+        _ensure_dataframe_has_rows(dataframe)
         _validate_headers(dataframe, columns)
 
         rules = _load_rules(session, columns)
@@ -560,6 +558,11 @@ def _normalize_dataframe(dataframe: DataFrame) -> DataFrame:
     df = df.reset_index(drop=True)
     df = df.astype("object")
     return df
+
+
+def _ensure_dataframe_has_rows(dataframe: DataFrame) -> None:
+    if dataframe.empty:
+        raise ValueError("El archivo proporcionado está en blanco")
 
 
 def _validate_headers(dataframe: DataFrame, columns: Sequence[TemplateColumn]) -> None:
