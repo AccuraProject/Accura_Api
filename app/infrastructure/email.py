@@ -228,9 +228,15 @@ def send_email(subject: str, html_content: str, recipient: str) -> bool:
     return True
 
 
-def send_new_user_credentials_email(email: str, password: str) -> bool:
+def send_new_user_credentials_email(
+    email: str,
+    password: str,
+    *,
+    recipient: str | None = None,
+) -> bool:
     """Send a welcome email containing the credentials for the new user."""
 
+    recipient_email = recipient or email
     subject = "Bienvenido a Accura"
     html_content = _build_email_layout(
         title="Tu cuenta ya esta lista",
@@ -244,18 +250,20 @@ def send_new_user_credentials_email(email: str, password: str) -> bool:
             "<p style=\"margin:0;\">Por seguridad, inicia sesion y cambia tu contrasena en cuanto entres a la plataforma.</p>"
         ),
     )
-    return send_email(subject, html_content, email)
+    return send_email(subject, html_content, recipient_email)
 
 
 def send_user_credentials_update_email(
     email: str,
     password: str | None,
     *,
+    recipient: str | None = None,
     email_changed: bool,
     password_changed: bool,
 ) -> bool:
     """Notify a user about changes to their credentials."""
 
+    recipient_email = recipient or email
     subject = "Actualizacion de credenciales de Accura"
     messages: list[str] = [
         "<p style=\"margin:0 0 14px 0;\">Hola,</p>",
@@ -291,12 +299,18 @@ def send_user_credentials_update_email(
         accent_soft="#eef5ff",
         body_html="".join(messages),
     )
-    return send_email(subject, html_content, email)
+    return send_email(subject, html_content, recipient_email)
 
 
-def send_user_password_reset_email(email: str, password: str) -> bool:
+def send_user_password_reset_email(
+    email: str,
+    password: str,
+    *,
+    recipient: str | None = None,
+) -> bool:
     """Send a password reset email with the generated credentials."""
 
+    recipient_email = recipient or email
     subject = "Restablecimiento de contrasena de Accura"
     html_content = _build_email_layout(
         title="Restablecimos tu contrasena",
@@ -312,4 +326,4 @@ def send_user_password_reset_email(email: str, password: str) -> bool:
             )
         ),
     )
-    return send_email(subject, html_content, email)
+    return send_email(subject, html_content, recipient_email)

@@ -27,7 +27,10 @@ from app.interfaces.api.schemas import (
     UserUpdate,
 )
 from app.infrastructure.security import generate_secure_password
-from app.interfaces.api.routes_helpers import compute_credentials_notification
+from app.interfaces.api.routes_helpers import (
+    compute_credentials_notification,
+    resolve_password_reset_recipient,
+)
 
 router = APIRouter(prefix="/users", tags=["users"])
 logger = logging.getLogger(__name__)
@@ -37,6 +40,15 @@ def _to_read_model(user: User) -> UserRead:
     if hasattr(UserRead, "model_validate"):
         return UserRead.model_validate(user)
     return UserRead.from_orm(user)
+
+
+def _get_creator_user(db: Session, target_user: User) -> User | None:
+    if target_user.created_by is None:
+        return None
+    try:
+        return get_user_uc(db, target_user.created_by, include_inactive=True)
+    except ValueError:
+        return None
 
 
 @router.post("/", response_model=UserRead, status_code=status.HTTP_201_CREATED)
@@ -55,13 +67,28 @@ def register_user(
             role_id=user_in.role_id,
             email=user_in.email,
             password=generated_password,
+            send_emails=user_in.send_emails,
             created_by=current_user.id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    if not send_new_user_credentials_email(user.email, generated_password):
-        logger.warning("No se pudo enviar el correo de credenciales al usuario %s", user.email)
+    credentials_recipient = resolve_password_reset_recipient(user, current_user)
+    if credentials_recipient.email is None:
+        logger.warning(
+            "No se envio el correo de credenciales para user_id=%s porque send_emails esta desactivado y no se encontro el creador",
+            user.id,
+        )
+    elif not send_new_user_credentials_email(
+        user.email,
+        generated_password,
+        recipient=credentials_recipient.email,
+    ):
+        logger.warning(
+            "No se pudo enviar el correo de credenciales del usuario %s al destinatario %s",
+            user.email,
+            credentials_recipient.email,
+        )
 
     return _to_read_model(user)
 
@@ -188,6 +215,11 @@ def update_user(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="El cliente no puede cambiar su estado",
             )
+        if "send_emails" in update_data:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="El cliente no puede cambiar la configuracion de envio de correos",
+            )
         provided_password = bool(update_data.get("password"))
         allowed_without_password = {"name"}
         non_password_fields = {
@@ -247,6 +279,8 @@ def update_user(
         update_payload["must_change_password"] = must_change_password
     if "is_active" in update_data:
         update_payload["is_active"] = update_data["is_active"]
+    if "send_emails" in update_data:
+        update_payload["send_emails"] = update_data["send_emails"]
     if role_id is not None:
         update_payload["role_id"] = role_id
     if password is not None:
@@ -278,9 +312,18 @@ def update_user(
         password_for_email = (
             password_for_notification if notification_decision.include_password else None
         )
+        creator_user = _get_creator_user(db, user)
+        credentials_recipient = resolve_password_reset_recipient(user, creator_user)
+        if credentials_recipient.email is None:
+            logger.warning(
+                "No se envio el correo de actualizacion de credenciales para user_id=%s porque send_emails esta desactivado y no se encontro el creador",
+                user.id,
+            )
+            return _to_read_model(user)
         if not send_user_credentials_update_email(
             user.email,
             password_for_email,
+            recipient=credentials_recipient.email,
             email_changed=email_changed,
             password_changed=password_changed,
         ):
@@ -317,7 +360,18 @@ def reset_user_password(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    if not send_user_password_reset_email(user.email, new_password):
+    creator_user = _get_creator_user(db, user)
+    reset_recipient = resolve_password_reset_recipient(user, creator_user)
+    if reset_recipient.email is None:
+        logger.warning(
+            "No se envio el correo de restablecimiento para user_id=%s porque send_emails esta desactivado y no se encontro el creador",
+            user.id,
+        )
+    elif not send_user_password_reset_email(
+        user.email,
+        new_password,
+        recipient=reset_recipient.email,
+    ):
         logger.warning(
             "No se pudo enviar el correo de restablecimiento de contraseña al usuario %s",
             user.email,

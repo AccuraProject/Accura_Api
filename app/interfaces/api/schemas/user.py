@@ -33,12 +33,14 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     role_id: int = Field(..., ge=1)
+    send_emails: bool = True
 
 
 class UserUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=50)
     email: EmailStr | None = None
     password: str | None = Field(default=None, min_length=8)
+    send_emails: bool | None = None
     is_active: bool | None = None
     role_id: int | None = None
 
@@ -53,6 +55,7 @@ class UserRead(BaseModel):
     id: int
     name: str
     email: EmailStr
+    send_emails: bool
     must_change_password: bool
     last_login: datetime | None
     created_at: datetime | None

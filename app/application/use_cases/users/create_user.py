@@ -16,6 +16,7 @@ def create_user(
     role_id: int,
     email: str,
     password: str,
+    send_emails: bool = True,
     created_by: int | None = None,
 ) -> User:
     """Create a new user ensuring unique email addresses."""
@@ -60,6 +61,7 @@ def create_user(
         name=name,
         email=normalized_email,
         password=hashed_password,
+        send_emails=send_emails,
         must_change_password=must_change_password,
         last_login=None,
         created_by=created_by,

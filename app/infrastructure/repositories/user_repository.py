@@ -125,6 +125,7 @@ class UserRepository:
             name=model.name,
             email=model.email,
             password=model.password,
+            send_emails=model.send_emails,
             must_change_password=model.must_change_password,
             last_login=ensure_app_naive_datetime(model.last_login),
             created_by=model.created_by,
@@ -157,6 +158,7 @@ class UserRepository:
         model.name = user.name
         model.email = user.email
         model.password = user.password
+        model.send_emails = user.send_emails
         model.must_change_password = user.must_change_password
         model.last_login = ensure_app_naive_datetime(user.last_login)
         if not include_creation_fields:

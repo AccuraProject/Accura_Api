@@ -117,8 +117,33 @@ def initialize_database() -> None:
     from app.infrastructure import models  # noqa: F401  # ensure models are imported
 
     Base.metadata.create_all(bind=engine, checkfirst=True)
+    _ensure_user_columns()
     _ensure_rule_columns()
     _sync_rule_statuses()
+
+
+def _ensure_user_columns() -> None:
+    """Add non-destructive missing columns for legacy user tables."""
+
+    inspector = inspect(engine)
+    if "user" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"].lower() for column in inspector.get_columns("user")}
+    if "send_emails" in existing_columns:
+        return
+
+    dialect = engine.dialect.name.lower()
+    if dialect == "mssql":
+        statement = (
+            "ALTER TABLE [user] ADD [send_emails] BIT NOT NULL "
+            "CONSTRAINT [DF_user_send_emails] DEFAULT 1"
+        )
+    else:
+        statement = 'ALTER TABLE "user" ADD COLUMN "send_emails" BOOLEAN NOT NULL DEFAULT true'
+
+    with engine.begin() as connection:
+        connection.execute(text(statement))
 
 
 def _ensure_rule_columns() -> None:

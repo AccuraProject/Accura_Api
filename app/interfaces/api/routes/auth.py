@@ -21,6 +21,7 @@ from app.infrastructure.database import get_db
 from app.infrastructure.email import send_user_password_reset_email
 from app.infrastructure.security import create_access_token, get_password_hash
 from app.interfaces.api.dependencies import get_current_user, oauth2_scheme, require_admin
+from app.interfaces.api.routes_helpers import resolve_password_reset_recipient
 from app.interfaces.api.schemas import (
     ForgotPasswordRequest,
     ForgotPasswordResponse,
@@ -36,6 +37,15 @@ logger = logging.getLogger(__name__)
 _IMPERSONATION_TOKEN_EXPIRE_SECONDS = 60 * 60
 
 _PASSWORD_RESET_MESSAGE = "Se envio una contrasena temporal al correo registrado."
+
+
+def _get_creator_user(db: Session, target_user: User) -> User | None:
+    if target_user.created_by is None:
+        return None
+    try:
+        return get_user_uc(db, target_user.created_by, include_inactive=True)
+    except ValueError:
+        return None
 
 
 # Nota: se conserva la firma esperada por OAuth2PasswordRequestForm.
@@ -185,10 +195,22 @@ def forgot_password(
             detail="No fue posible procesar la solicitud de restablecimiento",
         ) from exc
 
-    if not send_user_password_reset_email(user.email, temporary_password):
+    creator_user = _get_creator_user(db, user)
+    reset_recipient = resolve_password_reset_recipient(user, creator_user)
+    if reset_recipient.email is None:
         logger.warning(
-            "No se pudo enviar el correo de restablecimiento de contrasena al usuario %s",
+            "No se envio el correo de restablecimiento para user_id=%s porque send_emails esta desactivado y no se encontro el creador",
+            user.id,
+        )
+    elif not send_user_password_reset_email(
+        user.email,
+        temporary_password,
+        recipient=reset_recipient.email,
+    ):
+        logger.warning(
+            "No se pudo enviar el correo de restablecimiento de contrasena para el usuario %s al destinatario %s",
             user.email,
+            reset_recipient.email,
         )
 
     return ForgotPasswordResponse(message=_PASSWORD_RESET_MESSAGE)

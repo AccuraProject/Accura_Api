@@ -16,6 +16,7 @@ class User:
     name: str
     email: str
     password: str
+    send_emails: bool
     must_change_password: bool
     last_login: datetime | None
     created_by: int | None

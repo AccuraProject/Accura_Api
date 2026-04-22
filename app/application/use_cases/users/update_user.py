@@ -18,6 +18,7 @@ def update_user(
     name: str | None = None,
     email: str | None = None,
     must_change_password: bool | None = None,
+    send_emails: bool | None = None,
     is_active: bool | None = None,
     password: str | None = None,
     role_id: int | None = None,
@@ -63,6 +64,7 @@ def update_user(
             if must_change_password is not None
             else current_user.must_change_password
         ),
+        send_emails=send_emails if send_emails is not None else current_user.send_emails,
         is_active=is_active if is_active is not None else current_user.is_active,
         updated_by=updated_by if updated_by is not None else current_user.updated_by,
         updated_at=now_in_app_timezone(),
