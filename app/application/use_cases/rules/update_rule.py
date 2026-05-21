@@ -9,7 +9,7 @@ from app.domain.entities import Rule
 from app.infrastructure.storage import delete_blob, extract_blob_path_from_url
 from app.infrastructure.repositories import RuleRepository, TemplateColumnRepository
 from app.utils import now_in_app_timezone
-from .artifacts import build_rule_artifacts
+from .artifacts import build_rule_artifacts, normalize_rule_examples_payload
 from .validators import ensure_unique_rule_names
 
 
@@ -36,8 +36,9 @@ def update_rule(
 
     new_rule = rule if rule is not None else current.rule
     if rule is not None:
+        new_rule = normalize_rule_examples_payload(new_rule)
         ensure_unique_rule_names(
-            rule,
+            new_rule,
             repository,
             created_by=current.created_by,
             exclude_rule_id=rule_id,

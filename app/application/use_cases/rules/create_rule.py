@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.domain.entities import Rule
 from app.infrastructure.repositories import RuleRepository
 from app.utils import now_in_app_timezone
-from .artifacts import build_rule_artifacts
+from .artifacts import build_rule_artifacts, normalize_rule_examples_payload
 from .validators import ensure_unique_rule_names
 
 
@@ -21,6 +21,7 @@ def create_rule(
     """Create a new validation rule."""
 
     repository = RuleRepository(session)
+    rule = normalize_rule_examples_payload(rule)
     ensure_unique_rule_names(rule, repository, created_by=created_by)
     summary, attachment = build_rule_artifacts(rule, rule_id=None)
 

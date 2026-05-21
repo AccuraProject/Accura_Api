@@ -519,6 +519,44 @@ def _detect_internal_parameter_labels(
     return parameter_labels, dependent_candidate
 
 
+def _extract_nested_dependency_field_candidates(value: Any) -> list[str]:
+    """Infer real dependent field names nested under dependency type containers."""
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+
+    def inspect(candidate_value: Any) -> None:
+        if isinstance(candidate_value, Mapping):
+            for key, nested in candidate_value.items():
+                if not isinstance(key, str):
+                    inspect(nested)
+                    continue
+
+                stripped_key = key.strip()
+                if not stripped_key:
+                    inspect(nested)
+                    continue
+
+                normalized_key = _normalize_for_matching(stripped_key)
+                if normalized_key in _DEPENDENCY_TYPE_ALIASES:
+                    inspect(nested)
+                    continue
+                if normalized_key in _PARAMETER_LABEL_MARKERS:
+                    continue
+                if normalized_key in seen:
+                    continue
+                seen.add(normalized_key)
+                ordered.append(stripped_key)
+        elif isinstance(candidate_value, Sequence) and not isinstance(
+            candidate_value, (str, bytes)
+        ):
+            for item in candidate_value:
+                inspect(item)
+
+    inspect(value)
+    return ordered
+
+
 def _extract_dependency_header_fields(rule_config: Any) -> list[str]:
     """Infer header combinations for dependency rules."""
 
@@ -539,9 +577,13 @@ def _extract_dependency_header_fields(rule_config: Any) -> list[str]:
             if not stripped_key:
                 continue
             if normalized_key in _DEPENDENCY_TYPE_ALIASES:
-                if normalized_key not in seen_normalized:
-                    header_candidates.append(stripped_key)
-                    seen_normalized.add(normalized_key)
+                nested_candidates = _extract_nested_dependency_field_candidates(value)
+                for nested_candidate in nested_candidates:
+                    normalized_nested = _normalize_for_matching(nested_candidate)
+                    if normalized_nested in seen_normalized:
+                        continue
+                    header_candidates.append(nested_candidate)
+                    seen_normalized.add(normalized_nested)
                 continue
             if dependent_label is None:
                 dependent_label = stripped_key
@@ -1006,7 +1048,8 @@ class StructuredChatService:
             "Nunca uses textos genéricos como 'N/A', 'Por definir' ni dejes campos vacíos. "
             "La 'Descripción' y el 'Mensaje de error' deben sonar naturales y fáciles de entender para cualquier usuario. "
             "No menciones sectores o dominios especializados salvo que el usuario lo pida expresamente. "
-            "En 'Ejemplo', entrega un caso válido y uno inválido lo más realista posible."
+            "En 'Ejemplo', entrega exactamente dos claves: 'Ejemplo válido' y 'Ejemplo inválido', "
+            "con casos lo más realistas posible. No uses las claves 'Válido' ni 'Inválido'."
         )
 
         message_to_use = user_message

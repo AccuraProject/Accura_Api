@@ -52,6 +52,24 @@ _DEPENDENCY_TYPE_ALIASES: dict[str, str] = {
 }
 
 
+_DEPENDENCY_PARAMETER_ALIASES: set[str] = {
+    "longitud minima",
+    "longitud maxima",
+    "valor minimo",
+    "valor maximo",
+    "numero de decimales",
+    "formato",
+    "fecha minima",
+    "fecha maxima",
+    "codigo de pais",
+    "lista",
+    "lista compleja",
+    "campos",
+    "columnas",
+    "nombre de campos",
+}
+
+
 _SUPPORTED_TYPE_HINTS: dict[str, tuple[str, ...]] = {
     "Texto": ("texto", "cadena", "caracter", "caracteres", "letras", "longitud"),
     "NÃºmero": (
@@ -878,11 +896,70 @@ def _sanitize_dependency_header(raw_response: Any) -> Any:
     if not inferred_headers and not inferred_header_rule:
         return raw_response
 
+    current_header_rule = _deduplicate_headers(
+        _extract_header_entries(raw_response.get("Header rule"))
+    )
+    current_headers = _deduplicate_headers(
+        _extract_header_entries(raw_response.get("Header"))
+    )
+
+    def _is_valid_dependency_header_rule(entries: Sequence[str]) -> bool:
+        if len(entries) < 2:
+            return False
+
+        normalized_entries = [_normalize_label(entry) for entry in entries]
+        if len(set(normalized_entries)) != len(normalized_entries):
+            return False
+
+        for normalized in normalized_entries:
+            if (
+                normalized in _DEPENDENCY_TYPE_ALIASES
+                or normalized in _DEPENDENCY_PARAMETER_ALIASES
+            ):
+                return False
+        return True
+
+    def _is_valid_dependency_header(entries: Sequence[str]) -> bool:
+        if len(entries) < 2:
+            return False
+
+        normalized_entries = [_normalize_label(entry) for entry in entries]
+        if len(set(normalized_entries)) != len(normalized_entries):
+            return False
+
+        for normalized in normalized_entries:
+            if (
+                normalized in _DEPENDENCY_TYPE_ALIASES
+                or normalized in _DEPENDENCY_PARAMETER_ALIASES
+            ):
+                return False
+
+        if inferred_header_rule:
+            normalized_expected = {
+                _normalize_label(entry)
+                for entry in inferred_header_rule
+                if isinstance(entry, str) and entry.strip()
+            }
+            normalized_current = {
+                normalized
+                for normalized in normalized_entries
+                if normalized
+            }
+            if normalized_expected and normalized_current != normalized_expected:
+                return False
+
+        return True
+
     sanitized = dict(raw_response)
-    if inferred_header_rule:
+    if inferred_header_rule and not _is_valid_dependency_header_rule(current_header_rule):
         sanitized["Header rule"] = inferred_header_rule
-    if inferred_headers:
+    elif current_header_rule:
+        sanitized["Header rule"] = current_header_rule
+
+    if inferred_headers and not _is_valid_dependency_header(current_headers):
         sanitized["Header"] = inferred_headers
+    elif current_headers:
+        sanitized["Header"] = current_headers
     return sanitized
 
 

@@ -202,6 +202,37 @@ def _serialize_summary_value(value: Any) -> Any:
     return value
 
 
+def _normalize_example_payload(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        normalized: dict[str, Any] = {}
+        for key, nested in value.items():
+            normalized_key = key
+            if isinstance(key, str):
+                normalized_label = _normalize_label(key)
+                if normalized_label in {"valido", "ejemplo valido"}:
+                    normalized_key = "Ejemplo válido"
+                elif normalized_label in {"invalido", "ejemplo invalido"}:
+                    normalized_key = "Ejemplo inválido"
+            normalized[_safe_text(normalized_key) or key] = _normalize_example_payload(nested)
+        return normalized
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [_normalize_example_payload(item) for item in value]
+    return value
+
+
+def normalize_rule_examples_payload(rule_payload: Any) -> Any:
+    if isinstance(rule_payload, Mapping):
+        normalized = dict(rule_payload)
+        if "Ejemplo" in normalized:
+            normalized["Ejemplo"] = _normalize_example_payload(normalized.get("Ejemplo"))
+        if "Regla" in normalized:
+            normalized["Regla"] = normalize_rule_examples_payload(normalized.get("Regla"))
+        return normalized
+    if isinstance(rule_payload, Sequence) and not isinstance(rule_payload, (str, bytes)):
+        return [normalize_rule_examples_payload(entry) for entry in rule_payload]
+    return rule_payload
+
+
 def _humanize_value(value: Any) -> str:
     if value is None:
         return "No definido"
@@ -626,7 +657,11 @@ def build_rule_summary_payload(
     rules = [_build_summary_for_definition(definition) for definition in definitions]
     if not rules:
         return None
-    return rules[0]
+    return {
+        "version": 1,
+        "rule_count": len(rules),
+        "rules": rules,
+    }
 
 
 def build_rule_artifacts(
