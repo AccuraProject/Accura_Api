@@ -963,6 +963,128 @@ def _sanitize_dependency_header(raw_response: Any) -> Any:
     return sanitized
 
 
+def _coerce_dependency_like_complex_list(raw_response: Any) -> Any:
+    """Convert dependency-shaped payloads into a proper complex list when applicable."""
+
+    if not isinstance(raw_response, Mapping):
+        return raw_response
+
+    tipo_de_dato = raw_response.get("Tipo de dato") or raw_response.get("tipo_de_dato")
+    if not isinstance(tipo_de_dato, str) or _normalize_label(tipo_de_dato) != "dependencia":
+        return raw_response
+
+    rule_block = raw_response.get("Regla") or raw_response.get("regla")
+    if not isinstance(rule_block, Mapping):
+        return raw_response
+
+    specifics = rule_block.get("reglas especifica")
+    if not isinstance(specifics, Sequence) or isinstance(specifics, (str, bytes)) or not specifics:
+        return raw_response
+
+    flattened_rows: list[dict[str, Any]] = []
+    inferred_headers: list[str] = []
+    seen_headers: set[str] = set()
+
+    for entry in specifics:
+        if not isinstance(entry, Mapping) or not entry:
+            return raw_response
+
+        context_fields: dict[str, Any] = {}
+        nested_combinations: list[Mapping[str, Any]] | None = None
+
+        for key, value in entry.items():
+            if not isinstance(key, str) or not key.strip():
+                return raw_response
+
+            normalized_key = _normalize_label(key)
+            if normalized_key == "lista compleja":
+                if isinstance(value, Mapping):
+                    nested_key = next(
+                        (
+                            candidate_key
+                            for candidate_key in value.keys()
+                            if isinstance(candidate_key, str)
+                            and _normalize_label(candidate_key) == "lista compleja"
+                        ),
+                        None,
+                    )
+                    if nested_key is None:
+                        return raw_response
+                    combinations_value = value.get(nested_key)
+                else:
+                    combinations_value = value
+
+                if (
+                    not isinstance(combinations_value, Sequence)
+                    or isinstance(combinations_value, (str, bytes))
+                    or not combinations_value
+                ):
+                    return raw_response
+
+                validated_combinations = [
+                    item for item in combinations_value if isinstance(item, Mapping) and item
+                ]
+                if len(validated_combinations) != len(combinations_value):
+                    return raw_response
+                nested_combinations = validated_combinations
+                continue
+
+            if normalized_key in _DEPENDENCY_TYPE_ALIASES:
+                return raw_response
+
+            if isinstance(value, Mapping) or (
+                isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+            ):
+                return raw_response
+
+            context_fields[key.strip()] = deepcopy(value)
+
+        if not context_fields or nested_combinations is None:
+            return raw_response
+
+        for header in context_fields.keys():
+            normalized_header = _normalize_label(header)
+            if normalized_header not in seen_headers:
+                seen_headers.add(normalized_header)
+                inferred_headers.append(header)
+
+        for combination in nested_combinations:
+            flattened_row = dict(context_fields)
+            for nested_key, nested_value in combination.items():
+                if not isinstance(nested_key, str) or not nested_key.strip():
+                    return raw_response
+                candidate_key = nested_key.strip()
+                normalized_candidate = _normalize_label(candidate_key)
+                if normalized_candidate in {
+                    _normalize_label(existing_key) for existing_key in flattened_row.keys()
+                }:
+                    return raw_response
+                flattened_row[candidate_key] = deepcopy(nested_value)
+                if normalized_candidate not in seen_headers:
+                    seen_headers.add(normalized_candidate)
+                    inferred_headers.append(candidate_key)
+            flattened_rows.append(flattened_row)
+
+    if not flattened_rows or len(inferred_headers) < 2:
+        return raw_response
+
+    sanitized = dict(raw_response)
+    sanitized["Tipo de dato"] = "Lista compleja"
+    sanitized["Header"] = list(inferred_headers)
+    sanitized["Header rule"] = list(inferred_headers)
+    sanitized["Regla"] = {"Lista compleja": flattened_rows}
+
+    rule_name = sanitized.get("Nombre de la regla")
+    if isinstance(rule_name, str) and rule_name.strip():
+        sanitized["Nombre de la regla"] = re.sub(
+            r"(?i)dependencia",
+            "lista compleja",
+            rule_name.strip(),
+        )
+
+    return sanitized
+
+
 def _extract_existing_rule_names(rules_catalog: Sequence[Mapping[str, Any]]) -> set[str]:
     existing_names: set[str] = set()
 
@@ -1410,6 +1532,7 @@ def analyze_message(
             reference_context=reference_context,
         )
         logger.debug("Respuesta sin validar del asistente: %s", raw_response)
+        raw_response = _coerce_dependency_like_complex_list(raw_response)
         raw_response = _sanitize_dependency_header(raw_response)
         raw_response = _normalize_rule_name(
             raw_response,

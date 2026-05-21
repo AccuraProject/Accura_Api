@@ -280,6 +280,11 @@ def _collect_leaf_labels(value: Any, add_label: Callable[[str], None]) -> None:
                 _collect_leaf_labels(nested, add_label)
                 continue
 
+            normalized_candidate = _normalize_for_matching(candidate)
+            if normalized_candidate in _DEPENDENCY_TYPE_ALIASES:
+                _collect_leaf_labels(nested, add_label)
+                continue
+
             if _is_leaf_value(nested):
                 add_label(candidate)
             else:
@@ -1041,6 +1046,12 @@ class StructuredChatService:
             "el objeto del tipo correspondiente (por ejemplo, 'Documento': { 'Longitud mínima': 8, 'Longitud máxima': 8 }). "
             "Nunca copies la clave del tipo ('Documento') a 'Header' ni a 'Header rule'; solo usa las columnas reales y los "
             "parámetros internos. "
+
+            "Si el usuario describe una combinación permitida entre dos o más columnas y la validación consiste en aceptar "
+            "solo ciertas tuplas completas de valores (por ejemplo, Departamento + Provincia + Distrito), responde con "
+            "'Tipo de dato': 'Lista compleja' y estructura 'Regla' como { 'Lista compleja': [ ... ] }. "
+            "No uses 'Dependencia' para catálogos jerárquicos o combinaciones cerradas de valores, aunque el texto diga "
+            "que un valor 'pertenece' a otro. "
 
             "En reglas que no son de tipo 'Dependencia', 'Header' debe listar las columnas del formulario afectadas y sus "
             "parámetros configurables; 'Header rule' puede ser igual a 'Header' o quedar vacío si no aplica. "

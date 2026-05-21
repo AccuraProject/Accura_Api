@@ -479,6 +479,8 @@ class AssistantMessageResponse(BaseModel):
                                     value_label="'" + sanitized_label + "'",
                                 )
                         elif normalized_clave == "lista compleja":
+                            if isinstance(contenido, list):
+                                contenido = {"Lista compleja": contenido}
                             contenido = remap_dependency_config(
                                 contenido, ("Lista compleja",), clave
                             )

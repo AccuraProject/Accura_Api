@@ -262,6 +262,11 @@ def _collect_leaf_labels(value: Any, add_label: Callable[[str], None]) -> None:
                 _collect_leaf_labels(nested, add_label)
                 continue
 
+            normalized_candidate = _normalize_label(candidate)
+            if normalized_candidate in _DEPENDENCY_TYPE_ALIASES:
+                _collect_leaf_labels(nested, add_label)
+                continue
+
             if _is_leaf_value(nested):
                 add_label(candidate)
             else:
