@@ -11,6 +11,7 @@ from typing import Sequence
 from uuid import uuid4
 
 from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment, Font, PatternFill, Protection
 
 from app.domain.entities import TemplateColumn
@@ -21,6 +22,7 @@ _EXCEL_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 _DOWNLOAD_DIRECTORY = Path(tempfile.gettempdir()) / "accura_api_templates"
+_UNLOCKED_TEMPLATE_ROWS = 50_000
 
 
 def _display_excel_filename(template_name: str) -> str:
@@ -72,7 +74,7 @@ def _create_workbook(columns: Sequence[TemplateColumn]) -> Workbook:
     headers = [column.name for column in ordered_columns]
     if headers:
         worksheet.append(headers)
-        header_fill = PatternFill(fill_type="solid", fgColor="4F81BD")
+        header_fill = PatternFill(fill_type="solid", fgColor="16324F")
         header_font = Font(color="FFFFFFFF", bold=True)
         header_alignment = Alignment(horizontal="center", vertical="center")
         for cell in worksheet[1]:
@@ -82,11 +84,20 @@ def _create_workbook(columns: Sequence[TemplateColumn]) -> Workbook:
             cell.protection = Protection(locked=True)
 
         worksheet.freeze_panes = "A2"
+        worksheet.sheet_view.showGridLines = True
 
         max_col = len(headers)
-        for row in worksheet.iter_rows(min_row=2, max_row=1000, max_col=max_col):
+        for row in worksheet.iter_rows(
+            min_row=2,
+            max_row=_UNLOCKED_TEMPLATE_ROWS,
+            max_col=max_col,
+        ):
             for cell in row:
                 cell.protection = Protection(locked=False)
+
+        for index, header in enumerate(headers, start=1):
+            estimated_width = min(max(len(str(header)) + 6, 18), 42)
+            worksheet.column_dimensions[get_column_letter(index)].width = estimated_width
 
     worksheet.protection.enable()
     worksheet.protection.insertColumns = False

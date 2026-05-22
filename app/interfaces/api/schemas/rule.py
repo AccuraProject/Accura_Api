@@ -11,6 +11,7 @@ except ImportError:  # pragma: no cover - compatibility path for pydantic v1
     ConfigDict = None  # type: ignore[misc]
 
 JSONType = dict[str, Any] | list[Any]
+JSONObject = dict[str, Any]
 
 
 class RuleBase(BaseModel):
@@ -36,6 +37,9 @@ class RuleUpdate(BaseModel):
 
 class RuleRead(RuleBase):
     id: int
+    status: str
+    summary: JSONObject | None
+    attachment: str | None
     created_by: int | None
     created_at: datetime | None
     updated_by: int | None

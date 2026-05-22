@@ -107,6 +107,12 @@ def update_template(
             rule_repository=rule_repository,
         )
 
+    affected_rule_ids = {
+        rule.id
+        for column in current.columns
+        for rule in column.rules
+    }
+
     updated_template = replace(
         current,
         name=new_name,
@@ -210,6 +216,9 @@ def update_template(
             )
     except RuntimeError as exc:
         raise ValueError(str(exc)) from exc
+
+    if affected_rule_ids:
+        rule_repository.refresh_statuses(affected_rule_ids)
 
     if status_changed and saved_template.status == "published":
         notify_template_published(session, template=saved_template)

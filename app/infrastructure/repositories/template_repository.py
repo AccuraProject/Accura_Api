@@ -1,5 +1,6 @@
 """Persistence layer for templates."""
 
+import json
 from collections.abc import Sequence
 from typing import Any
 
@@ -47,6 +48,7 @@ class TemplateRepository:
         if creator_id is not None:
             query = query.filter(TemplateModel.created_by == creator_id)
         if user_id is not None:
+            self._expire_outdated_accesses(user_id=user_id)
             now = ensure_app_naive_datetime(now_in_app_timezone())
             access_exists = (
                 self.session.query(TemplateUserAccessModel.id)
@@ -71,6 +73,25 @@ class TemplateRepository:
         if limit is not None:
             query = query.limit(limit)
         return [self._to_entity(model) for model in query.all()]
+
+    def _expire_outdated_accesses(self, *, user_id: int) -> None:
+        now = ensure_app_naive_datetime(now_in_app_timezone())
+        expired_accesses = (
+            self.session.query(TemplateUserAccessModel)
+            .filter(TemplateUserAccessModel.user_id == user_id)
+            .filter(TemplateUserAccessModel.revoked_at.is_(None))
+            .filter(TemplateUserAccessModel.end_date.is_not(None))
+            .filter(TemplateUserAccessModel.end_date < now)
+            .all()
+        )
+        if not expired_accesses:
+            return
+
+        for access in expired_accesses:
+            access.revoked_at = now
+            access.updated_at = now
+            self.session.add(access)
+        self.session.commit()
 
     def get(self, template_id: int) -> Template | None:
         model = self._get_model(id=template_id)
@@ -165,7 +186,12 @@ class TemplateRepository:
 
     def get_rule_payloads(self, template_id: int) -> dict[int, Any]:
         rows = (
-            self.session.query(RuleModel.id, RuleModel.rule)
+            self.session.query(
+                RuleModel.id,
+                RuleModel.rule,
+                RuleModel.summary,
+                RuleModel.attachment,
+            )
             .join(
                 template_column_rule_table,
                 template_column_rule_table.c.rule_id == RuleModel.id,
@@ -181,8 +207,23 @@ class TemplateRepository:
             .all()
         )
         payloads: dict[int, Any] = {}
-        for rule_id, rule_payload in rows:
-            payloads[rule_id] = rule_payload
+        for rule_id, rule_payload, summary, attachment in rows:
+            parsed_summary: Any = summary
+            if isinstance(summary, str):
+                stripped_summary = summary.strip()
+                if not stripped_summary:
+                    parsed_summary = None
+                else:
+                    try:
+                        parsed_summary = json.loads(stripped_summary)
+                    except json.JSONDecodeError:
+                        parsed_summary = summary
+
+            payloads[rule_id] = {
+                "rule": rule_payload,
+                "summary": parsed_summary,
+                "attachment": attachment,
+            }
         return payloads
 
     @staticmethod

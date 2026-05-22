@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import replace
@@ -59,6 +60,23 @@ _DEPENDENCY_TYPE_ALIASES: set[str] = {
     "fecha",
 }
 
+_DEPENDENCY_PARAMETER_ALIASES: set[str] = {
+    "longitud minima",
+    "longitud maxima",
+    "valor minimo",
+    "valor maximo",
+    "numero de decimales",
+    "formato",
+    "fecha minima",
+    "fecha maxima",
+    "codigo de pais",
+    "lista",
+    "lista compleja",
+    "campos",
+    "columnas",
+    "nombre de campos",
+}
+
 
 def _normalize_label(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", str(value))
@@ -85,8 +103,6 @@ def _ensure_supported_type(type_label: str) -> tuple[str, str]:
         msg = "Tipo de dato no soportado."
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
     return normalized, canonical
-
-
 def _sanitize_text(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()
@@ -246,6 +262,11 @@ def _collect_leaf_labels(value: Any, add_label: Callable[[str], None]) -> None:
                 _collect_leaf_labels(nested, add_label)
                 continue
 
+            normalized_candidate = _normalize_label(candidate)
+            if normalized_candidate in _DEPENDENCY_TYPE_ALIASES:
+                _collect_leaf_labels(nested, add_label)
+                continue
+
             if _is_leaf_value(nested):
                 add_label(candidate)
             else:
@@ -324,6 +345,43 @@ def _infer_dependency_headers_from_block(
     return ordered
 
 
+def _extract_nested_dependency_field_candidates(value: Any) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+
+    def inspect(candidate_value: Any) -> None:
+        if isinstance(candidate_value, Mapping):
+            for key, nested in candidate_value.items():
+                if not isinstance(key, str):
+                    inspect(nested)
+                    continue
+
+                stripped_key = key.strip()
+                if not stripped_key:
+                    inspect(nested)
+                    continue
+
+                normalized_key = _normalize_label(stripped_key)
+                if normalized_key in _DEPENDENCY_TYPE_ALIASES:
+                    inspect(nested)
+                    continue
+                if normalized_key in _DEPENDENCY_PARAMETER_ALIASES:
+                    continue
+                if normalized_key in seen:
+                    continue
+
+                seen.add(normalized_key)
+                ordered.append(stripped_key)
+        elif isinstance(candidate_value, Sequence) and not isinstance(
+            candidate_value, (str, bytes)
+        ):
+            for item in candidate_value:
+                inspect(item)
+
+    inspect(value)
+    return ordered
+
+
 def _infer_header_rule(definition: Mapping[str, Any]) -> list[str]:
     rule_type = _normalize_label(definition.get("Tipo de dato", ""))
     rule_block = definition.get("Regla")
@@ -365,9 +423,13 @@ def _infer_header_rule(definition: Mapping[str, Any]) -> list[str]:
                 if not stripped_key:
                     continue
                 if normalized_key in _DEPENDENCY_TYPE_ALIASES:
-                    if normalized_key not in seen_normalized:
-                        header_candidates.append(stripped_key)
-                        seen_normalized.add(normalized_key)
+                    nested_candidates = _extract_nested_dependency_field_candidates(value)
+                    for nested_candidate in nested_candidates:
+                        normalized_nested = _normalize_label(nested_candidate)
+                        if normalized_nested in seen_normalized:
+                            continue
+                        header_candidates.append(nested_candidate)
+                        seen_normalized.add(normalized_nested)
                     continue
                 if dependent_label is None:
                     dependent_label = stripped_key
@@ -449,9 +511,48 @@ def _sanitize_rule_definition(definition: Mapping[str, Any]) -> dict[str, Any]:
     return sanitized_definition
 
 
+def _normalize_persisted_summary(raw_summary: Any) -> dict[str, Any] | None:
+    if raw_summary is None:
+        return None
+
+    parsed = raw_summary
+    if isinstance(raw_summary, str):
+        stripped = raw_summary.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+
+    if not isinstance(parsed, Mapping):
+        return None
+
+    version = parsed.get("version")
+    rule_count = parsed.get("rule_count")
+    rules = parsed.get("rules")
+
+    if isinstance(version, int) and isinstance(rule_count, int) and isinstance(rules, list):
+        return {
+            "version": version,
+            "rule_count": rule_count,
+            "rules": rules,
+        }
+
+    if "rule_name" in parsed:
+        return {
+            "version": 1,
+            "rule_count": 1,
+            "rules": [dict(parsed)],
+        }
+
+    return None
+
+
 def _to_read_model(rule: Rule) -> RuleRead:
     sanitized_rule = _sanitize_rule_payload(rule.rule)
-    sanitized_entity = replace(rule, rule=sanitized_rule)
+    summary_payload = _normalize_persisted_summary(rule.summary)
+    sanitized_entity = replace(rule, rule=sanitized_rule, summary=summary_payload)
     if hasattr(RuleRead, "model_validate"):
         return RuleRead.model_validate(sanitized_entity)
     return RuleRead.from_orm(sanitized_entity)

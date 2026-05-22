@@ -6,8 +6,10 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.domain.entities import Rule
+from app.infrastructure.storage import delete_blob, extract_blob_path_from_url
 from app.infrastructure.repositories import RuleRepository, TemplateColumnRepository
 from app.utils import now_in_app_timezone
+from .artifacts import build_rule_artifacts, normalize_rule_examples_payload
 from .validators import ensure_unique_rule_names
 
 
@@ -34,16 +36,24 @@ def update_rule(
 
     new_rule = rule if rule is not None else current.rule
     if rule is not None:
+        new_rule = normalize_rule_examples_payload(new_rule)
         ensure_unique_rule_names(
-            rule,
+            new_rule,
             repository,
             created_by=current.created_by,
             exclude_rule_id=rule_id,
         )
+        old_blob_path = extract_blob_path_from_url(current.attachment or "")
+        if old_blob_path:
+            delete_blob(old_blob_path)
+
+    summary, attachment = build_rule_artifacts(new_rule, rule_id=rule_id)
 
     updated_rule = replace(
         current,
         rule=new_rule,
+        summary=summary,
+        attachment=attachment,
         is_active=is_active if is_active is not None else current.is_active,
         updated_by=updated_by if updated_by is not None else current.updated_by,
         updated_at=now_in_app_timezone(),

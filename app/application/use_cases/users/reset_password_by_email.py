@@ -6,10 +6,14 @@ from sqlalchemy.orm import Session
 
 from app.domain.entities import User
 from app.infrastructure.repositories import UserRepository
-from app.infrastructure.security import get_password_hash, generate_secure_password
+from app.infrastructure.security import (
+    generate_secure_password,
+    get_password_hash,
+    validate_password_strength,
+)
 from app.utils import now_in_app_timezone
 
-from .validators import ensure_valid_gmail
+from .validators import ensure_valid_email
 
 
 def reset_password_by_email(session: Session, *, email: str) -> tuple[User, str]:
@@ -20,14 +24,17 @@ def reset_password_by_email(session: Session, *, email: str) -> tuple[User, str]
     change the password on next login.
     """
 
-    normalized_email = ensure_valid_gmail(email)
+    normalized_email = ensure_valid_email(email)
     repository = UserRepository(session)
 
     user = repository.get_by_email(normalized_email)
-    if user is None or not user.is_active:
-        raise ValueError("Usuario no encontrado")
+    if user is None:
+        raise ValueError("El correo electrónico no está registrado en el sistema")
+    if not user.is_active:
+        raise ValueError("El correo electrónico pertenece a un usuario inactivo")
 
     temporary_password = generate_secure_password()
+    validate_password_strength(temporary_password)
     hashed_password = get_password_hash(temporary_password)
 
     updated_user = replace(

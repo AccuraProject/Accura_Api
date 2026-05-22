@@ -44,6 +44,18 @@ def update_template_access(
         else access.end_date
     )
     _validate_access_window(normalized_start, normalized_end)
+    overlapping_access = repository.get_overlapping_access(
+        template_id=access.template_id,
+        user_id=access.user_id,
+        start_date=normalized_start,
+        end_date=normalized_end,
+        exclude_access_id=access.id,
+    )
+    if overlapping_access is not None:
+        raise ValueError(
+            "Ya existe otro acceso vigente o programado que se cruza con el "
+            "rango solicitado"
+        )
 
     updated_access = TemplateUserAccess(
         id=access.id,

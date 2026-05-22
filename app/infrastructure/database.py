@@ -8,7 +8,7 @@ import logging
 import re
 import urllib.parse
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import Settings, get_settings
@@ -117,6 +117,132 @@ def initialize_database() -> None:
     from app.infrastructure import models  # noqa: F401  # ensure models are imported
 
     Base.metadata.create_all(bind=engine, checkfirst=True)
+    _ensure_user_columns()
+    _ensure_rule_columns()
+    _sync_rule_statuses()
+
+
+def _ensure_user_columns() -> None:
+    """Add non-destructive missing columns for legacy user tables."""
+
+    inspector = inspect(engine)
+    if "user" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"].lower() for column in inspector.get_columns("user")}
+    if "send_emails" in existing_columns:
+        return
+
+    dialect = engine.dialect.name.lower()
+    if dialect == "mssql":
+        statement = (
+            "ALTER TABLE [user] ADD [send_emails] BIT NOT NULL "
+            "CONSTRAINT [DF_user_send_emails] DEFAULT 1"
+        )
+    else:
+        statement = 'ALTER TABLE "user" ADD COLUMN "send_emails" BOOLEAN NOT NULL DEFAULT true'
+
+    with engine.begin() as connection:
+        connection.execute(text(statement))
+
+
+def _ensure_rule_columns() -> None:
+    """Add non-destructive missing columns for legacy rule tables."""
+
+    inspector = inspect(engine)
+    if "rule" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"].lower() for column in inspector.get_columns("rule")}
+    dialect = engine.dialect.name.lower()
+    statements: list[str] = []
+    if "summary" not in existing_columns:
+        if dialect == "mssql":
+            statements.append("ALTER TABLE [rule] ADD [summary] NVARCHAR(MAX) NULL")
+        else:
+            statements.append('ALTER TABLE "rule" ADD COLUMN "summary" TEXT NULL')
+    if "attachment" not in existing_columns:
+        if dialect == "mssql":
+            statements.append("ALTER TABLE [rule] ADD [attachment] NVARCHAR(MAX) NULL")
+        else:
+            statements.append('ALTER TABLE "rule" ADD COLUMN "attachment" TEXT NULL')
+    if "status" not in existing_columns:
+        if dialect == "mssql":
+            statements.append(
+                "ALTER TABLE [rule] ADD [status] NVARCHAR(20) NOT NULL CONSTRAINT [DF_rule_status] DEFAULT 'borrador'"
+            )
+        else:
+            statements.append(
+                'ALTER TABLE "rule" ADD COLUMN "status" VARCHAR(20) NOT NULL DEFAULT \'borrador\''
+            )
+
+    if not statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
+def _sync_rule_statuses() -> None:
+    """Backfill rule status for legacy data based on published template usage."""
+    inspector = inspect(engine)
+    table_names = {name.lower() for name in inspector.get_table_names()}
+    required_tables = {"rule", "template", "template_column", "template_column_rule"}
+    if not required_tables.issubset(table_names):
+        return
+
+    dialect = engine.dialect.name.lower()
+    with engine.begin() as connection:
+        if dialect == "mssql":
+            connection.execute(
+                text(
+                    """
+                    UPDATE r
+                    SET [status] = CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                            FROM [template_column_rule] tcr
+                            INNER JOIN [template_column] tc
+                                ON tc.[id] = tcr.[template_column_id]
+                            INNER JOIN [template] t
+                                ON t.[id] = tc.[template_id]
+                            WHERE tcr.[rule_id] = r.[id]
+                              AND tc.[deleted] = 0
+                              AND t.[deleted] = 0
+                              AND t.[status] = 'published'
+                        ) THEN 'asignada'
+                        ELSE 'borrador'
+                    END
+                    FROM [rule] r
+                    WHERE r.[deleted] = 0
+                    """
+                )
+            )
+        else:
+            connection.execute(
+                text(
+                    """
+                    UPDATE "rule" AS r
+                    SET "status" = CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                            FROM "template_column_rule" AS tcr
+                            INNER JOIN "template_column" AS tc
+                                ON tc."id" = tcr."template_column_id"
+                            INNER JOIN "template" AS t
+                                ON t."id" = tc."template_id"
+                            WHERE tcr."rule_id" = r."id"
+                              AND tc."deleted" = false
+                              AND t."deleted" = false
+                              AND t."status" = 'published'
+                        ) THEN 'asignada'
+                        ELSE 'borrador'
+                    END
+                    WHERE r."deleted" = false
+                    """
+                )
+            )
 
 
 def get_db() -> Generator:

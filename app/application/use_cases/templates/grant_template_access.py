@@ -43,12 +43,17 @@ def grant_template_access(
     normalized_end = _normalize_date(end_date, use_end_of_day=True)
     _validate_access_window(effective_start, normalized_end)
 
-    existing_access = access_repository.get_by_template_and_user(
+    existing_access = access_repository.get_overlapping_access(
         template_id=template_id,
         user_id=user_id,
+        start_date=effective_start,
+        end_date=normalized_end,
     )
     if existing_access is not None:
-        raise ValueError("El usuario ya tiene acceso activo a la plantilla")
+        raise ValueError(
+            "El usuario ya tiene un acceso vigente o programado que se cruza "
+            "con el rango solicitado"
+        )
 
     access = TemplateUserAccess(
         id=None,
@@ -86,6 +91,12 @@ def _normalize_date(
 def _validate_access_window(start: datetime, end: datetime | None) -> None:
     """Validate that the configured access window is chronological."""
 
+    today_start = _current_day_start()
+    if start < today_start:
+        raise ValueError(
+            "El rango de fechas no es válido: la fecha de inicio debe ser"
+            " posterior o igual a la fecha actual"
+        )
     if end is not None and end < start:
         raise ValueError(
             "El rango de fechas no es válido: la fecha de fin debe ser"

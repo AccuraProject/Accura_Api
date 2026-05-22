@@ -8,12 +8,12 @@ from sqlalchemy.orm import Session
 
 from app.domain.entities import User
 from app.infrastructure.database import get_db
-from app.infrastructure.repositories import UserRepository
-from app.infrastructure.security import decode_access_token
 from app.infrastructure.openai_client import (
     OpenAIConfigurationError,
     StructuredChatService,
 )
+from app.infrastructure.repositories import UserRepository
+from app.infrastructure.security import decode_access_token
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
 
@@ -28,26 +28,30 @@ def get_current_user(
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Credenciales inválidas",
+            detail="Credenciales invalidas",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
     email: str | None = payload.get("sub")
     password_signature_claim = payload.get("pwd_sig")
+    impersonation_claim = payload.get("impersonation", False)
+    impersonated_by_user_id = payload.get("impersonated_by_user_id")
+    impersonated_user_id = payload.get("impersonated_user_id")
     if email is None or password_signature_claim is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Credenciales inválidas",
+            detail="Credenciales invalidas",
             headers={"WWW-Authenticate": "Bearer"},
         )
     if not isinstance(password_signature_claim, str):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Credenciales inválidas",
+            detail="Credenciales invalidas",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = UserRepository(db).get_by_email(email)
+    repository = UserRepository(db)
+    user = repository.get_by_email(email)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -61,9 +65,39 @@ def get_current_user(
     if password_signature_claim != expected_signature:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Credenciales inválidas",
+            detail="Credenciales invalidas",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    if impersonation_claim:
+        if not isinstance(impersonated_by_user_id, int) or not isinstance(
+            impersonated_user_id, int
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Credenciales invalidas",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if user.id != impersonated_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Credenciales invalidas",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        actor = repository.get(impersonated_by_user_id)
+        if actor is None or not actor.is_active or not actor.is_admin():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Credenciales invalidas",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        setattr(user, "_impersonation_active", True)
+        setattr(user, "_impersonated_by_user_id", actor.id)
+        setattr(user, "_impersonated_by_email", actor.email)
+    else:
+        setattr(user, "_impersonation_active", False)
 
     return user
 

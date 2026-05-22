@@ -8,15 +8,18 @@ from sqlalchemy.orm import Session
 
 from app.domain.entities import TemplateColumn
 from app.infrastructure.repositories import (
+    RuleRepository,
     TemplateColumnRepository,
     TemplateRepository,
 )
 
 from .create_template_column import (
     NewTemplateColumnData,
+    _build_column,
     create_template_columns,
 )
 from .artifacts import refresh_template_resources
+from .validators import ensure_rule_header_dependencies
 
 
 def replace_template_columns(
@@ -39,6 +42,33 @@ def replace_template_columns(
         raise ValueError("No se pueden modificar las columnas de una plantilla publicada")
 
     existing_columns = list(column_repository.list_by_template(template_id))
+    rule_repository = RuleRepository(session)
+    affected_rule_ids = {
+        rule.id
+        for column in existing_columns
+        for rule in column.rules
+    }
+    forbidden_names: set[str] = set()
+    forbidden_identifiers: set[str] = set()
+    validated_columns: list[TemplateColumn] = []
+
+    for payload in columns:
+        validated_columns.append(
+            _build_column(
+                template_id=template_id,
+                payload=payload,
+                created_by=actor_id,
+                forbidden_names=forbidden_names,
+                forbidden_identifiers=forbidden_identifiers,
+                rule_repository=rule_repository,
+            )
+        )
+
+    ensure_rule_header_dependencies(
+        columns=validated_columns,
+        rule_repository=rule_repository,
+    )
+
     for column in existing_columns:
         column_repository.delete(column.id, deleted_by=actor_id)
 
@@ -50,6 +80,14 @@ def replace_template_columns(
             columns=columns,
             created_by=actor_id,
         )
+
+    affected_rule_ids.update(
+        rule.id
+        for column in created_columns
+        for rule in column.rules
+    )
+    if affected_rule_ids:
+        rule_repository.refresh_statuses(affected_rule_ids)
 
     refresh_template_resources(
         session,

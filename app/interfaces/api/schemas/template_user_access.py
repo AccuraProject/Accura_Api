@@ -6,11 +6,14 @@ from typing import TypeAlias
 
 from pydantic import BaseModel, Field, conlist
 
+from app.utils import now_in_app_timezone
+
 try:  # pragma: no cover - compatibility helpers for pydantic v1/v2
-    from pydantic import field_validator
+    from pydantic import field_validator, model_validator
 except ImportError:  # pragma: no cover - fallback for pydantic v1
     field_validator = None  # type: ignore[assignment]
-    from pydantic import validator
+    model_validator = None  # type: ignore[assignment]
+    from pydantic import root_validator, validator
 
 try:  # pragma: no cover - compatibility with pydantic v1/v2
     from pydantic import ConfigDict
@@ -91,6 +94,35 @@ class TemplateUserAccessGrantItem(BaseModel):
     else:  # pragma: no cover
         class Config:
             extra = "forbid"
+
+    @staticmethod
+    def _validate_dates(
+        start_date: date | None, end_date: date | None
+    ) -> None:
+        today = now_in_app_timezone().date()
+        effective_start = start_date or today
+        if effective_start < today:
+            raise ValueError(
+                "La fecha de inicio debe ser mayor o igual a la fecha actual"
+            )
+        if end_date is not None and end_date < effective_start:
+            raise ValueError(
+                "La fecha de fin debe ser mayor o igual a la fecha de inicio"
+            )
+
+    if model_validator is not None:  # pragma: no branch
+
+        @model_validator(mode="after")  # type: ignore[misc]
+        def _validate_access_dates(self):
+            self._validate_dates(self.start_date, self.end_date)
+            return self
+
+    else:  # pragma: no cover - compatibility for pydantic v1
+
+        @root_validator
+        def _validate_access_dates_v1(cls, values):
+            cls._validate_dates(values.get("start_date"), values.get("end_date"))
+            return values
 
 
 class TemplateUserAccessRevokeItem(BaseModel):

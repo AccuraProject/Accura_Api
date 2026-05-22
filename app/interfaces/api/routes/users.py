@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.application.use_cases.users import (
+    change_password as change_password_uc,
     create_user as create_user_uc,
     delete_user as delete_user_uc,
     get_user as get_user_uc,
@@ -19,9 +20,17 @@ from app.infrastructure.email import (
     send_user_password_reset_email,
 )
 from app.interfaces.api.dependencies import get_current_active_user, require_admin
-from app.interfaces.api.schemas import UserCreate, UserRead, UserUpdate
+from app.interfaces.api.schemas import (
+    PasswordChangeRequest,
+    UserCreate,
+    UserRead,
+    UserUpdate,
+)
 from app.infrastructure.security import generate_secure_password
-from app.interfaces.api.routes_helpers import compute_credentials_notification
+from app.interfaces.api.routes_helpers import (
+    compute_credentials_notification,
+    resolve_password_reset_recipient,
+)
 
 router = APIRouter(prefix="/users", tags=["users"])
 logger = logging.getLogger(__name__)
@@ -31,6 +40,17 @@ def _to_read_model(user: User) -> UserRead:
     if hasattr(UserRead, "model_validate"):
         return UserRead.model_validate(user)
     return UserRead.from_orm(user)
+
+
+def _get_creator_user(db: Session, target_user: User) -> User | None:
+    if target_user.created_by is None:
+        return None
+    try:
+        return get_user_uc(db, target_user.created_by, include_inactive=True)
+    except ValueError:
+        return None
+
+
 @router.post("/", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def register_user(
     user_in: UserCreate,
@@ -47,13 +67,28 @@ def register_user(
             role_id=user_in.role_id,
             email=user_in.email,
             password=generated_password,
+            send_emails=user_in.send_emails,
             created_by=current_user.id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    if not send_new_user_credentials_email(user.email, generated_password):
-        logger.warning("No se pudo enviar el correo de credenciales al usuario %s", user.email)
+    credentials_recipient = resolve_password_reset_recipient(user, current_user)
+    if credentials_recipient.email is None:
+        logger.warning(
+            "No se envio el correo de credenciales para user_id=%s porque send_emails esta desactivado y no se encontro el creador",
+            user.id,
+        )
+    elif not send_new_user_credentials_email(
+        user.email,
+        generated_password,
+        recipient=credentials_recipient.email,
+    ):
+        logger.warning(
+            "No se pudo enviar el correo de credenciales del usuario %s al destinatario %s",
+            user.email,
+            credentials_recipient.email,
+        )
 
     return _to_read_model(user)
 
@@ -63,6 +98,33 @@ def read_current_user(current_user: User = Depends(get_current_active_user)):
     """Devuelve la información del usuario autenticado."""
 
     return _to_read_model(current_user)
+
+
+@router.put("/me/password", response_model=UserRead)
+def change_current_user_password(
+    payload: PasswordChangeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Actualiza la contrasena del usuario autenticado."""
+
+    try:
+        user = change_password_uc(
+            db,
+            user_id=current_user.id,
+            current_password=payload.current_password,
+            new_password=payload.new_password,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = status.HTTP_400_BAD_REQUEST
+        if detail == "Usuario no encontrado":
+            status_code = status.HTTP_404_NOT_FOUND
+        elif detail == "Usuario inactivo":
+            status_code = status.HTTP_403_FORBIDDEN
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    return _to_read_model(user)
 
 
 @router.get("/", response_model=list[UserRead])
@@ -153,6 +215,11 @@ def update_user(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="El cliente no puede cambiar su estado",
             )
+        if "send_emails" in update_data:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="El cliente no puede cambiar la configuracion de envio de correos",
+            )
         provided_password = bool(update_data.get("password"))
         allowed_without_password = {"name"}
         non_password_fields = {
@@ -174,13 +241,11 @@ def update_user(
                 detail="El cliente debe proporcionar su contraseña para actualizar sus datos",
             )
 
-    name = update_data.get("name", target_user.name)
     email = update_data.get("email")
     email_changed = email is not None and email != target_user.email
     if email is not None and not email_changed:
         email = None
     must_change_password: bool | None = None
-    is_active = update_data["is_active"] if "is_active" in update_data else target_user.is_active
     role_id = update_data.get("role_id") if "role_id" in update_data else None
     requested_password = update_data.get("password")
 
@@ -202,17 +267,29 @@ def update_user(
     elif requested_password is not None:
         must_change_password = False
 
+    update_payload = {
+        "user_id": user_id,
+        "updated_by": current_user.id,
+    }
+    if "name" in update_data:
+        update_payload["name"] = update_data["name"]
+    if email is not None:
+        update_payload["email"] = email
+    if must_change_password is not None:
+        update_payload["must_change_password"] = must_change_password
+    if "is_active" in update_data:
+        update_payload["is_active"] = update_data["is_active"]
+    if "send_emails" in update_data:
+        update_payload["send_emails"] = update_data["send_emails"]
+    if role_id is not None:
+        update_payload["role_id"] = role_id
+    if password is not None:
+        update_payload["password"] = password
+
     try:
         user = update_user_uc(
             db,
-            user_id=user_id,
-            name=name,
-            email=email,
-            must_change_password=must_change_password,
-            is_active=is_active,
-            role_id=role_id,
-            password=password,
-            updated_by=current_user.id,
+            **update_payload,
         )
     except ValueError as exc:
         status_code = status.HTTP_400_BAD_REQUEST
@@ -226,13 +303,27 @@ def update_user(
         is_admin=is_admin,
         acting_on_self=acting_on_self,
     )
+    if not user.is_active:
+        notification_decision = type(notification_decision)(
+            should_send=False,
+            include_password=False,
+        )
     if notification_decision.should_send:
         password_for_email = (
             password_for_notification if notification_decision.include_password else None
         )
+        creator_user = _get_creator_user(db, user)
+        credentials_recipient = resolve_password_reset_recipient(user, creator_user)
+        if credentials_recipient.email is None:
+            logger.warning(
+                "No se envio el correo de actualizacion de credenciales para user_id=%s porque send_emails esta desactivado y no se encontro el creador",
+                user.id,
+            )
+            return _to_read_model(user)
         if not send_user_credentials_update_email(
             user.email,
             password_for_email,
+            recipient=credentials_recipient.email,
             email_changed=email_changed,
             password_changed=password_changed,
         ):
@@ -269,7 +360,18 @@ def reset_user_password(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    if not send_user_password_reset_email(user.email, new_password):
+    creator_user = _get_creator_user(db, user)
+    reset_recipient = resolve_password_reset_recipient(user, creator_user)
+    if reset_recipient.email is None:
+        logger.warning(
+            "No se envio el correo de restablecimiento para user_id=%s porque send_emails esta desactivado y no se encontro el creador",
+            user.id,
+        )
+    elif not send_user_password_reset_email(
+        user.email,
+        new_password,
+        recipient=reset_recipient.email,
+    ):
         logger.warning(
             "No se pudo enviar el correo de restablecimiento de contraseña al usuario %s",
             user.email,

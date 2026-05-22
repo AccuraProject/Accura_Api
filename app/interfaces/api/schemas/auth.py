@@ -8,6 +8,10 @@ class Token(BaseModel):
     token_type: str
     role: str
     must_change_password: bool
+    impersonation: bool = False
+    impersonated_by_user_id: int | None = None
+    impersonated_user_id: int | None = None
+    expires_in_seconds: int | None = None
 
 
 class TokenValidationResponse(BaseModel):

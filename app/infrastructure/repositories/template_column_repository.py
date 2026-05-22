@@ -275,9 +275,11 @@ class TemplateColumnRepository:
                 TemplateColumnModel.id
                 == template_column_rule_table.c.template_column_id,
             )
+            .join(TemplateModel, TemplateModel.id == TemplateColumnModel.template_id)
             .filter(
                 template_column_rule_table.c.rule_id == rule_id,
                 TemplateColumnModel.deleted == false(),
+                TemplateModel.deleted == false(),
             )
         )
         return query.first() is not None
@@ -296,6 +298,7 @@ class TemplateColumnRepository:
             .filter(
                 template_column_rule_table.c.rule_id == rule_id,
                 TemplateColumnModel.deleted == false(),
+                TemplateModel.deleted == false(),
                 TemplateModel.status == "published",
             )
         )

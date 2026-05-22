@@ -15,12 +15,10 @@ from app.domain.entities import (
 from app.infrastructure.models import (
     LoadModel,
     RuleModel,
-    TemplateColumnModel,
     TemplateModel,
     TemplateUserAccessModel,
     UserModel,
 )
-from app.infrastructure.models.template_column import template_column_rule_table
 from app.utils import ensure_app_timezone, now_in_app_timezone
 
 
@@ -247,19 +245,10 @@ def get_kpis(
     ) or 0
 
     assigned_rules_query = (
-        session.query(func.count(func.distinct(template_column_rule_table.c.rule_id)))
-        .select_from(template_column_rule_table)
-        .join(
-            TemplateColumnModel,
-            TemplateColumnModel.id
-            == template_column_rule_table.c.template_column_id,
-        )
-        .join(RuleModel, template_column_rule_table.c.rule_id == RuleModel.id)
-        .join(TemplateModel, TemplateColumnModel.template_id == TemplateModel.id)
+        session.query(func.count(RuleModel.id))
         .filter(
-            TemplateColumnModel.deleted == false(),
-            TemplateModel.deleted == false(),
             RuleModel.deleted == false(),
+            RuleModel.status == "asignada",
         )
     )
     if admin_user_id is not None:

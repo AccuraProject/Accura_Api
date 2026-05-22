@@ -153,9 +153,6 @@ def upload_template_load(
     if not columns:
         raise ValueError("La plantilla no tiene columnas activas para importar")
 
-    if not file_bytes:
-        raise ValueError("El archivo proporcionado está vacío")
-
     load_repo = LoadRepository(session)
     now = now_in_app_timezone()
     load = load_repo.create(
@@ -216,6 +213,7 @@ def process_template_load(
     try:
         dataframe = _read_source_file(file_bytes, suffix)
         dataframe = _normalize_dataframe(dataframe)
+        _ensure_dataframe_has_rows(dataframe)
         _validate_headers(dataframe, columns)
 
         rules = _load_rules(session, columns)
@@ -562,6 +560,11 @@ def _normalize_dataframe(dataframe: DataFrame) -> DataFrame:
     return df
 
 
+def _ensure_dataframe_has_rows(dataframe: DataFrame) -> None:
+    if dataframe.empty:
+        raise ValueError("El archivo proporcionado está en blanco")
+
+
 def _validate_headers(dataframe: DataFrame, columns: Sequence[TemplateColumn]) -> None:
     expected = [column.name for column in columns]
     observed = list(dataframe.columns)
@@ -621,18 +624,27 @@ def _validate_dataframe(
 
     normalized_column_lookup: dict[str, str] = {}
     column_token_lookup: dict[str, tuple[str, ...]] = {}
+    rule_header_lookup: dict[int, dict[str, str]] = {}
 
     for column in columns:
         normalized_name = _normalize_type_label(column.name)
         if normalized_name and normalized_name not in normalized_column_lookup:
             normalized_column_lookup[normalized_name] = column.name
         column_token_lookup[column.name] = _tokenize_label(column.name)
+        for assignment in column.rules:
+            if not assignment.headers:
+                continue
+            headers_for_rule = rule_header_lookup.setdefault(assignment.id, {})
+            for header in assignment.headers:
+                normalized_header = _normalize_type_label(header)
+                if normalized_header and normalized_header not in headers_for_rule:
+                    headers_for_rule[normalized_header] = column.name
 
     for column in columns:
         normalized_type = _normalize_type_label(column.data_type)
         parser = _TYPE_PARSERS.get(normalized_type)
         column_rule_definitions = [
-            rules[rule_id]
+            (rules[rule_id], rule_header_lookup.get(rule_id, {}))
             for rule_id in column.rule_ids
             if rule_id in rules
         ]
@@ -645,7 +657,7 @@ def _validate_dataframe(
             df[column.name] = pd.Series([None] * len(df.index), dtype=object)
         series = df[column.name]
         if column_rule_definitions:
-            for rule_definition in column_rule_definitions:
+            for rule_definition, _rule_headers in column_rule_definitions:
                 duplicate_configs = _gather_duplicate_rule_configs(
                     rule_definition,
                     column.name,
@@ -674,7 +686,7 @@ def _validate_dataframe(
 
             if column_rule_definitions:
                 current_value = normalized_value
-                for rule_definition in column_rule_definitions:
+                for rule_definition, rule_headers in column_rule_definitions:
                     candidate_value, rule_errors = _validate_value_with_rule(
                         column.name,
                         current_value,
@@ -683,6 +695,7 @@ def _validate_dataframe(
                         parser,
                         normalized_column_lookup,
                         column_token_lookup,
+                        rule_headers,
                     )
                     if rule_errors:
                         column_errors.extend(rule_errors)
@@ -1129,6 +1142,7 @@ def _validate_value_with_rule(
     base_parser: Callable[[Any], tuple[Any, str | None]] | None,
     column_lookup: Mapping[str, str],
     column_tokens: Mapping[str, tuple[str, ...]],
+    rule_headers: Mapping[str, str] | None = None,
 ) -> tuple[Any, list[str]]:
     if isinstance(rule_definition, list):
         current_value = value
@@ -1142,6 +1156,7 @@ def _validate_value_with_rule(
                 base_parser,
                 column_lookup,
                 column_tokens,
+                rule_headers,
             )
             if definition_errors:
                 all_errors.extend(definition_errors)
@@ -1189,6 +1204,7 @@ def _validate_value_with_rule(
         base_parser=base_parser,
         column_lookup=column_lookup,
         column_tokens=column_tokens,
+        rule_headers=rule_headers,
     )
     return parsed_value, validator_errors
 
@@ -1613,7 +1629,7 @@ def _validate_text_rule(
     dependent_value: Any | None = None,
     **_: Any,
 ) -> tuple[str, list[str]]:
-    text_value = str(value)
+    text_value = _stringify_scalar(value)
     errors: list[str] = []
     min_length = _coerce_int(rule_config.get("Longitud mínima"))
     max_length = _coerce_int(rule_config.get("Longitud máxima"))
@@ -1666,7 +1682,7 @@ def _validate_document_rule(
     dependent_value: Any | None = None,
     **_: Any,
 ) -> tuple[str, list[str]]:
-    text_value = str(value)
+    text_value = _stringify_scalar(value)
     errors: list[str] = []
     min_length = _coerce_int(rule_config.get("Longitud mínima"))
     max_length = _coerce_int(rule_config.get("Longitud máxima"))
@@ -1860,10 +1876,16 @@ def _resolve_row_field_reference(
     row_context: Mapping[str, Any],
     column_lookup: Mapping[str, str] | None,
     column_tokens: Mapping[str, tuple[str, ...]] | None,
+    rule_headers: Mapping[str, str] | None = None,
 ) -> str | None:
     normalized_field = _normalize_type_label(field)
     if not normalized_field:
         return None
+
+    if rule_headers:
+        mapped = rule_headers.get(normalized_field)
+        if mapped and mapped in row_context:
+            return mapped
 
     for key in row_context:
         if isinstance(key, str) and _labels_match(key, normalized_field, field):
@@ -1909,6 +1931,7 @@ def _validate_full_list_rule(
     row_context: Mapping[str, Any] | None,
     column_lookup: Mapping[str, str] | None = None,
     column_tokens: Mapping[str, tuple[str, ...]] | None = None,
+    rule_headers: Mapping[str, str] | None = None,
     **_: Any,
 ) -> tuple[str, list[str]]:
     text_value = str(value)
@@ -1932,6 +1955,7 @@ def _validate_full_list_rule(
                     row_context=row_snapshot,
                     column_lookup=column_lookup,
                     column_tokens=column_tokens,
+                    rule_headers=rule_headers,
                 )
                 resolver_cache[field] = resolved_field
 
@@ -2235,6 +2259,7 @@ def _validate_dependency_rule(
     base_parser: Callable[[Any], tuple[Any, str | None]] | None,
     column_lookup: Mapping[str, str] | None = None,
     column_tokens: Mapping[str, tuple[str, ...]] | None = None,
+    rule_headers: Mapping[str, str] | None = None,
     **_: Any,
 ) -> tuple[Any, list[str]]:
     fallback_value, fallback_errors = _apply_base_parser(
@@ -2286,6 +2311,13 @@ def _validate_dependency_rule(
     found_dependent = False
     dependent_current: Any = None
     resolved_header: str | None = None
+    if rule_headers:
+        mapped_header = rule_headers.get(normalized_dependent_name)
+        if mapped_header and mapped_header in row_context:
+            dependent_current = row_context.get(mapped_header)
+            found_dependent = True
+            resolved_header = mapped_header
+
     for key, candidate in row_context.items():
         if isinstance(key, str) and _labels_match(
             key,
@@ -2348,6 +2380,10 @@ def _validate_dependency_rule(
 
     def _candidate_headers(raw_key: str, normalized_key: str) -> set[str]:
         headers: set[str] = {raw_key}
+        if rule_headers:
+            mapped = rule_headers.get(normalized_key)
+            if isinstance(mapped, str) and mapped:
+                headers.add(mapped)
         if column_lookup:
             mapped = column_lookup.get(normalized_key)
             if isinstance(mapped, str) and mapped:
@@ -2412,6 +2448,7 @@ def _validate_dependency_rule(
                 break
 
             normalized_key = _normalize_type_label(raw_key)
+            handler = _DEPENDENCY_RULE_HANDLERS.get(normalized_key)
             candidate_headers = _candidate_headers(raw_key, normalized_key)
 
             if _targets_field(
@@ -2428,6 +2465,58 @@ def _validate_dependency_rule(
                 trigger_value = config
                 continue
 
+            if handler is not None and isinstance(config, Mapping):
+                nested_validator_added = False
+                for nested_key, nested_value in config.items():
+                    if not isinstance(nested_key, str) or not nested_key.strip():
+                        continue
+
+                    nested_normalized_key = _normalize_type_label(nested_key)
+                    nested_candidate_headers = _candidate_headers(
+                        nested_key, nested_normalized_key
+                    )
+                    if not _targets_field(
+                        nested_candidate_headers,
+                        normalized_column_label,
+                        column_name,
+                    ):
+                        continue
+
+                    normalized_nested_config: Mapping[str, Any]
+                    if isinstance(nested_value, Mapping):
+                        normalized_nested_config = nested_value
+                    elif normalized_key == "lista" and isinstance(
+                        nested_value, Sequence
+                    ) and not isinstance(nested_value, (str, bytes)):
+                        normalized_nested_config = {"Lista": list(nested_value)}
+                    else:
+                        accumulated_errors.append(
+                            _compose_error(
+                                message,
+                                f"la configuración asociada a '{nested_key}' debe ser un objeto",
+                                column_name=column_name,
+                                cell_value=value,
+                                dependent_field=dependent_name,
+                                dependent_value=dependent_current,
+                            )
+                        )
+                        continue
+
+                    validators.append((nested_key, handler, normalized_nested_config))
+                    nested_validator_added = True
+
+                if nested_validator_added:
+                    continue
+
+                # Cuando la regla dependiente usa un tipo de validador directo
+                # (por ejemplo "Documento", "Texto", "Número") y la
+                # configuración contiene sus parámetros, aplicamos ese validador
+                # sobre la columna actual aunque la clave no coincida con el
+                # nombre visible de la columna.
+                if normalized_column_label != normalized_dependent_name:
+                    validators.append((raw_key, handler, config))
+                continue
+
             if not _targets_field(
                 candidate_headers,
                 normalized_column_label,
@@ -2438,7 +2527,6 @@ def _validate_dependency_rule(
                 # dependiente.
                 continue
 
-            handler = _DEPENDENCY_RULE_HANDLERS.get(normalized_key)
             if handler is None:
                 if (
                     normalized_key in _DEPENDENCY_METADATA_KEYS
@@ -2501,6 +2589,7 @@ def _validate_dependency_rule(
                 row_context=row_context,
                 column_lookup=column_lookup,
                 column_tokens=column_tokens,
+                rule_headers=rule_headers,
                 dependent_field=dependent_name,
                 dependent_value=dependent_current,
             )
@@ -2849,10 +2938,26 @@ def _coerce_timestamp(value: Any) -> Any:
     return value
 
 
+def _stringify_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return format(value, "f").rstrip("0").rstrip(".")
+    if isinstance(value, Decimal):
+        if value == value.to_integral_value():
+            return str(int(value))
+        return format(value.normalize(), "f").rstrip("0").rstrip(".")
+    return str(value)
+
+
 def _parse_string(value: Any) -> tuple[Any, str | None]:
     if value is None:
         return None, None
-    return str(value), None
+    return _stringify_scalar(value), None
 
 
 def _parse_text(value: Any) -> tuple[Any, str | None]:

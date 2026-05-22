@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Sequence
 
+from sqlalchemy import case, or_
 from sqlalchemy.orm import Session
 
 from app.domain.entities import TemplateUserAccess
@@ -24,6 +26,7 @@ class TemplateUserAccessRepository:
         include_inactive: bool = False,
         include_scheduled: bool = False,
     ) -> Sequence[TemplateUserAccess]:
+        self._expire_outdated_accesses(template_id=template_id)
         query = self.session.query(TemplateUserAccessModel).filter(
             TemplateUserAccessModel.template_id == template_id,
             TemplateUserAccessModel.revoked_at.is_(None),
@@ -49,6 +52,7 @@ class TemplateUserAccessRepository:
         include_inactive: bool = False,
         include_scheduled: bool = False,
     ) -> Sequence[TemplateUserAccess]:
+        self._expire_outdated_accesses(user_id=user_id)
         query = self.session.query(TemplateUserAccessModel).filter(
             TemplateUserAccessModel.user_id == user_id,
             TemplateUserAccessModel.revoked_at.is_(None),
@@ -77,6 +81,8 @@ class TemplateUserAccessRepository:
         template_id: int,
         user_id: int,
     ) -> TemplateUserAccess | None:
+        self._expire_outdated_accesses(template_id=template_id, user_id=user_id)
+        now = ensure_app_naive_datetime(now_in_app_timezone())
         model = (
             self.session.query(TemplateUserAccessModel)
             .filter(
@@ -84,9 +90,53 @@ class TemplateUserAccessRepository:
                 TemplateUserAccessModel.user_id == user_id,
                 TemplateUserAccessModel.revoked_at.is_(None),
             )
-            .order_by(TemplateUserAccessModel.start_date.desc())
+            .order_by(
+                case(
+                    (
+                        TemplateUserAccessModel.start_date <= now,
+                        case(
+                            (
+                                or_(
+                                    TemplateUserAccessModel.end_date.is_(None),
+                                    TemplateUserAccessModel.end_date >= now,
+                                ),
+                                0,
+                            ),
+                            else_=2,
+                        ),
+                    ),
+                    else_=1,
+                ),
+                TemplateUserAccessModel.start_date.asc(),
+            )
             .first()
         )
+        return self._to_entity(model) if model else None
+
+    def get_overlapping_access(
+        self,
+        *,
+        template_id: int,
+        user_id: int,
+        start_date: datetime,
+        end_date: datetime | None,
+        exclude_access_id: int | None = None,
+    ) -> TemplateUserAccess | None:
+        self._expire_outdated_accesses(template_id=template_id, user_id=user_id)
+        query = self.session.query(TemplateUserAccessModel).filter(
+            TemplateUserAccessModel.template_id == template_id,
+            TemplateUserAccessModel.user_id == user_id,
+            TemplateUserAccessModel.revoked_at.is_(None),
+            or_(
+                TemplateUserAccessModel.end_date.is_(None),
+                TemplateUserAccessModel.end_date >= start_date,
+            ),
+        )
+        if end_date is not None:
+            query = query.filter(TemplateUserAccessModel.start_date <= end_date)
+        if exclude_access_id is not None:
+            query = query.filter(TemplateUserAccessModel.id != exclude_access_id)
+        model = query.order_by(TemplateUserAccessModel.start_date.desc()).first()
         return self._to_entity(model) if model else None
 
     def get_active_access(
@@ -96,6 +146,7 @@ class TemplateUserAccessRepository:
         template_id: int,
         reference_time: datetime | None = None,
     ) -> TemplateUserAccess | None:
+        self._expire_outdated_accesses(template_id=template_id, user_id=user_id)
         if reference_time is None:
             reference_time = ensure_app_naive_datetime(now_in_app_timezone())
         model = (
@@ -155,6 +206,33 @@ class TemplateUserAccessRepository:
         self.session.commit()
         self.session.refresh(model)
         return self._to_entity(model)
+
+    def _expire_outdated_accesses(
+        self,
+        *,
+        template_id: int | None = None,
+        user_id: int | None = None,
+    ) -> None:
+        now = ensure_app_naive_datetime(now_in_app_timezone())
+        query = self.session.query(TemplateUserAccessModel).filter(
+            TemplateUserAccessModel.revoked_at.is_(None),
+            TemplateUserAccessModel.end_date.is_not(None),
+            TemplateUserAccessModel.end_date < now,
+        )
+        if template_id is not None:
+            query = query.filter(TemplateUserAccessModel.template_id == template_id)
+        if user_id is not None:
+            query = query.filter(TemplateUserAccessModel.user_id == user_id)
+
+        expired_models = query.all()
+        if not expired_models:
+            return
+
+        for model in expired_models:
+            model.revoked_at = now
+            model.updated_at = now
+            self.session.add(model)
+        self.session.commit()
 
     @staticmethod
     def _to_entity(model: TemplateUserAccessModel) -> TemplateUserAccess:

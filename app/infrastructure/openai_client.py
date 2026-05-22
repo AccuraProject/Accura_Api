@@ -280,6 +280,11 @@ def _collect_leaf_labels(value: Any, add_label: Callable[[str], None]) -> None:
                 _collect_leaf_labels(nested, add_label)
                 continue
 
+            normalized_candidate = _normalize_for_matching(candidate)
+            if normalized_candidate in _DEPENDENCY_TYPE_ALIASES:
+                _collect_leaf_labels(nested, add_label)
+                continue
+
             if _is_leaf_value(nested):
                 add_label(candidate)
             else:
@@ -519,6 +524,44 @@ def _detect_internal_parameter_labels(
     return parameter_labels, dependent_candidate
 
 
+def _extract_nested_dependency_field_candidates(value: Any) -> list[str]:
+    """Infer real dependent field names nested under dependency type containers."""
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+
+    def inspect(candidate_value: Any) -> None:
+        if isinstance(candidate_value, Mapping):
+            for key, nested in candidate_value.items():
+                if not isinstance(key, str):
+                    inspect(nested)
+                    continue
+
+                stripped_key = key.strip()
+                if not stripped_key:
+                    inspect(nested)
+                    continue
+
+                normalized_key = _normalize_for_matching(stripped_key)
+                if normalized_key in _DEPENDENCY_TYPE_ALIASES:
+                    inspect(nested)
+                    continue
+                if normalized_key in _PARAMETER_LABEL_MARKERS:
+                    continue
+                if normalized_key in seen:
+                    continue
+                seen.add(normalized_key)
+                ordered.append(stripped_key)
+        elif isinstance(candidate_value, Sequence) and not isinstance(
+            candidate_value, (str, bytes)
+        ):
+            for item in candidate_value:
+                inspect(item)
+
+    inspect(value)
+    return ordered
+
+
 def _extract_dependency_header_fields(rule_config: Any) -> list[str]:
     """Infer header combinations for dependency rules."""
 
@@ -539,9 +582,13 @@ def _extract_dependency_header_fields(rule_config: Any) -> list[str]:
             if not stripped_key:
                 continue
             if normalized_key in _DEPENDENCY_TYPE_ALIASES:
-                if normalized_key not in seen_normalized:
-                    header_candidates.append(stripped_key)
-                    seen_normalized.add(normalized_key)
+                nested_candidates = _extract_nested_dependency_field_candidates(value)
+                for nested_candidate in nested_candidates:
+                    normalized_nested = _normalize_for_matching(nested_candidate)
+                    if normalized_nested in seen_normalized:
+                        continue
+                    header_candidates.append(nested_candidate)
+                    seen_normalized.add(normalized_nested)
                 continue
             if dependent_label is None:
                 dependent_label = stripped_key
@@ -918,6 +965,7 @@ class StructuredChatService:
         user_message: str,
         *,
         recent_rules: Sequence[dict[str, Any]] | None = None,
+        reference_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Envía un mensaje y devuelve JSON validado por el modelo, usando JSON Schema estricto.
@@ -937,6 +985,7 @@ class StructuredChatService:
                     user_message,
                     json_schema_definition,
                     recent_rules=recent_rules,
+                    reference_context=reference_context,
                     limit_mode=limit_mode,
                     broad_catalog_request=broad_catalog_request,
                 )
@@ -956,6 +1005,7 @@ class StructuredChatService:
         json_schema_definition: dict[str, Any],
         *,
         recent_rules: Sequence[dict[str, Any]] | None,
+        reference_context: Mapping[str, Any] | None,
         limit_mode: bool,
         broad_catalog_request: bool,
     ) -> dict[str, Any]:
@@ -966,9 +1016,14 @@ class StructuredChatService:
 
         instruction = (
             "Analiza el mensaje del usuario y construye una definición de regla de validación para campos de "
-            "formularios usados en el sector InsurTech (tecnología aplicada a seguros). "
-            "Debes responder con un JSON que cumpla EXACTAMENTE con el esquema 'Regla de Campo' y definir todas las "
-            "propiedades requeridas. Cuando definas reglas del tipo 'Dependencia', omite la propiedad 'Nombre dependiente'. "
+            "formularios. Debes responder con un JSON que cumpla EXACTAMENTE con el esquema 'Regla de Campo' y "
+            "definir todas las propiedades requeridas. Cuando definas reglas del tipo 'Dependencia', omite la "
+            "propiedad 'Nombre dependiente'. "
+            "El campo 'Nombre de la regla' debe ser siempre conciso y seguir este patrón: "
+            "'Validación [tipo de regla] [campo/campos] [característica principal]'. "
+            "Mantén el texto corto, evita frases largas como 'según...' o descripciones completas, y conserva el "
+            "tipo de regla exactamente como aparece en 'Tipo de dato'. Si una regla reciente ya usa un nombre muy "
+            "parecido, parafrasea el resto del nombre sin cambiar el tipo de regla. "
 
             "REGLAS PARA 'Header' Y 'Header rule' EN DEPENDENCIAS: "
             "1) Identifica siempre dos cosas: la columna condicionante (por ejemplo, 'Tipo Documento') y la columna dependiente "
@@ -992,11 +1047,20 @@ class StructuredChatService:
             "Nunca copies la clave del tipo ('Documento') a 'Header' ni a 'Header rule'; solo usa las columnas reales y los "
             "parámetros internos. "
 
+            "Si el usuario describe una combinación permitida entre dos o más columnas y la validación consiste en aceptar "
+            "solo ciertas tuplas completas de valores (por ejemplo, Departamento + Provincia + Distrito), responde con "
+            "'Tipo de dato': 'Lista compleja' y estructura 'Regla' como { 'Lista compleja': [ ... ] }. "
+            "No uses 'Dependencia' para catálogos jerárquicos o combinaciones cerradas de valores, aunque el texto diga "
+            "que un valor 'pertenece' a otro. "
+
             "En reglas que no son de tipo 'Dependencia', 'Header' debe listar las columnas del formulario afectadas y sus "
             "parámetros configurables; 'Header rule' puede ser igual a 'Header' o quedar vacío si no aplica. "
-            "Si el mensaje del usuario no especifica algún valor requerido, dedúcelo o propone uno coherente con las prácticas "
-            "del sector asegurador. Nunca uses textos genéricos como 'N/A', 'Por definir' ni dejes campos vacíos. "
-            "En 'Ejemplo', entrega un caso válido y uno inválido lo más realista posible."
+            "Si el mensaje del usuario no especifica algún valor requerido, dedúcelo o propone uno coherente con el contexto. "
+            "Nunca uses textos genéricos como 'N/A', 'Por definir' ni dejes campos vacíos. "
+            "La 'Descripción' y el 'Mensaje de error' deben sonar naturales y fáciles de entender para cualquier usuario. "
+            "No menciones sectores o dominios especializados salvo que el usuario lo pida expresamente. "
+            "En 'Ejemplo', entrega exactamente dos claves: 'Ejemplo válido' y 'Ejemplo inválido', "
+            "con casos lo más realistas posible. No uses las claves 'Válido' ni 'Inválido'."
         )
 
         message_to_use = user_message
@@ -1048,6 +1112,26 @@ class StructuredChatService:
                                 "Estas son las reglas de validación más recientes registradas en el sistema. "
                                 "Úsalas como conocimiento previo para mantener consistencia y evitar duplicados:\n"
                                 f"{recent_rules_payload}"
+                            ),
+                        }
+                    ],
+                }
+            )
+
+        if reference_context:
+            reference_payload = json.dumps(reference_context, ensure_ascii=False, indent=2)
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "Contexto detectado en la base de datos para esta solicitud. "
+                                "Si los campos o valores del pedido del usuario aparecen aquí, reutilízalos tal cual "
+                                "y priorízalos sobre valores inventados. Si falta alguno, genera una opción coherente "
+                                "solo para lo que no exista.\n"
+                                f"{reference_payload}"
                             ),
                         }
                     ],

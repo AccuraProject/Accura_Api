@@ -2,6 +2,7 @@
 
 from sqlalchemy.orm import Session
 
+from app.application.use_cases.template_columns.artifacts import refresh_template_resources
 from app.application.use_cases.template_columns.validators import (
     ensure_rule_header_dependencies,
 )
@@ -14,29 +15,100 @@ from app.infrastructure.repositories import (
 )
 from app.utils import now_in_app_timezone
 
+_COPY_SUFFIX = "_Copy"
+_MAX_TEMPLATE_NAME_LENGTH = 50
+_MAX_TABLE_NAME_LENGTH = 63
+
+
+def _build_copy_value(
+    value: str, *, max_length: int, duplicate_number: int = 0
+) -> str:
+    base_value = (value or "").strip()
+    suffix = _COPY_SUFFIX
+    if duplicate_number > 0:
+        suffix = f"{_COPY_SUFFIX}({duplicate_number})"
+    allowed_base_length = max_length - len(suffix)
+    if allowed_base_length <= 0:
+        return suffix[:max_length]
+    return f"{base_value[:allowed_base_length]}{suffix}"
+
+
+def _build_copy_table_name(
+    value: str, *, max_length: int, duplicate_number: int = 0
+) -> str:
+    base_value = (value or "").strip()
+    suffix = _COPY_SUFFIX
+    if duplicate_number > 0:
+        suffix = f"{_COPY_SUFFIX}_{duplicate_number}"
+    allowed_base_length = max_length - len(suffix)
+    if allowed_base_length <= 0:
+        return suffix[:max_length].lower()
+    return f"{base_value[:allowed_base_length]}{suffix}".lower()
+
+
+def _next_available_copy_name(
+    repository: TemplateRepository,
+    source_name: str,
+    *,
+    created_by: int | None,
+) -> str:
+    duplicate_number = 0
+    while True:
+        candidate = _build_copy_value(
+            source_name,
+            max_length=_MAX_TEMPLATE_NAME_LENGTH,
+            duplicate_number=duplicate_number,
+        )
+        if repository.get_by_name(candidate, created_by=created_by) is None:
+            return candidate
+        duplicate_number += 1
+
+
+def _next_available_copy_table_name(
+    repository: TemplateRepository,
+    source_table_name: str,
+) -> str:
+    duplicate_number = 0
+    while True:
+        candidate = _build_copy_table_name(
+            source_table_name,
+            max_length=_MAX_TABLE_NAME_LENGTH,
+            duplicate_number=duplicate_number,
+        )
+        if repository.get_by_table_name(candidate) is None:
+            return candidate
+        duplicate_number += 1
+
 
 def duplicate_template(
     session: Session,
     *,
     template_id: int,
-    name: str,
-    table_name: str,
-    description: str,
     created_by: int | None = None,
 ) -> Template:
-    """Duplicate ``template_id`` using the provided metadata for the new template."""
+    """Duplicate ``template_id`` reusing its metadata and columns."""
 
     template_repository = TemplateRepository(session)
     source_template = template_repository.get(template_id)
     if source_template is None:
         raise ValueError("Plantilla no encontrada")
 
+    duplicated_name = _next_available_copy_name(
+        template_repository,
+        source_template.name,
+        created_by=created_by,
+    )
+    duplicated_table_name = _next_available_copy_table_name(
+        template_repository,
+        source_template.table_name,
+    )
+
     duplicated_template = create_template(
         session,
         user_id=source_template.user_id,
-        name=name,
-        table_name=table_name,
-        description=description,
+        name=duplicated_name,
+        table_name=duplicated_table_name,
+        description=source_template.description,
         created_by=created_by,
     )
 
@@ -73,6 +145,11 @@ def duplicate_template(
     )
 
     column_repository.create_many(new_columns)
+    refresh_template_resources(
+        session,
+        duplicated_template.id,
+        actor_id=created_by,
+    )
 
     # Refresh the duplicated template so it includes the cloned columns.
     return template_repository.get(duplicated_template.id)

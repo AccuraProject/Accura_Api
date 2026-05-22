@@ -41,6 +41,7 @@ from .template import (
     TemplateColumnBulkCreate,
     TemplateColumnBulkUpdate,
     TemplateColumnCreate,
+    TemplateColumnRuleInput,
     TemplateColumnRule,
     TemplateColumnRead,
     TemplateColumnUpdate,
@@ -62,6 +63,7 @@ from .template_user_access import (
     TemplateUserAccessUpdateList,
 )
 from .user import RoleRead, UserCreate, UserRead, UserSummaryRead, UserUpdate
+from .user import PasswordChangeRequest, PasswordChangeResponse
 
 __all__ = [
     "AssistantMessageRequest",
@@ -97,6 +99,7 @@ __all__ = [
     "TemplateColumnBulkCreate",
     "TemplateColumnBulkUpdate",
     "TemplateColumnCreate",
+    "TemplateColumnRuleInput",
     "TemplateColumnRule",
     "TemplateColumnRead",
     "TemplateColumnUpdate",
@@ -115,6 +118,8 @@ __all__ = [
     "TemplateUserAccessUpdateItem",
     "TemplateUserAccessUpdateList",
     "RoleRead",
+    "PasswordChangeRequest",
+    "PasswordChangeResponse",
     "UserCreate",
     "UserRead",
     "UserSummaryRead",

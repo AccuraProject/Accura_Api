@@ -6,7 +6,7 @@ from app.domain.entities import User
 from app.infrastructure.repositories import RoleRepository, UserRepository
 from app.infrastructure.security import get_password_hash
 from app.utils import now_in_app_timezone
-from .validators import ensure_valid_gmail
+from .validators import ensure_valid_email
 
 
 def create_user(
@@ -16,6 +16,7 @@ def create_user(
     role_id: int,
     email: str,
     password: str,
+    send_emails: bool = True,
     created_by: int | None = None,
 ) -> User:
     """Create a new user ensuring unique email addresses."""
@@ -23,7 +24,7 @@ def create_user(
     repository = UserRepository(session)
     role_repository = RoleRepository(session)
 
-    normalized_email = ensure_valid_gmail(email)
+    normalized_email = ensure_valid_email(email)
 
     existing_user = repository.get_by_email(normalized_email)
     if existing_user:
@@ -60,6 +61,7 @@ def create_user(
         name=name,
         email=normalized_email,
         password=hashed_password,
+        send_emails=send_emails,
         must_change_password=must_change_password,
         last_login=None,
         created_by=created_by,

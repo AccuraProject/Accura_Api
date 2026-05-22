@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from app.domain.entities import User
+
 
 @dataclass(frozen=True)
 class CredentialsNotificationDecision:
@@ -9,6 +11,14 @@ class CredentialsNotificationDecision:
 
     should_send: bool
     include_password: bool
+
+
+@dataclass(frozen=True)
+class PasswordResetRecipient:
+    """Describe where password reset credentials should be delivered."""
+
+    email: str | None
+    redirected_to_creator: bool
 
 
 def compute_credentials_notification(
@@ -34,3 +44,21 @@ def compute_credentials_notification(
         )
 
     return CredentialsNotificationDecision(should_send=False, include_password=False)
+
+
+def resolve_password_reset_recipient(
+    target_user: User,
+    creator_user: User | None,
+) -> PasswordResetRecipient:
+    """Return the email recipient respecting the user's send email flag."""
+
+    if target_user.send_emails:
+        return PasswordResetRecipient(
+            email=target_user.email,
+            redirected_to_creator=False,
+        )
+
+    return PasswordResetRecipient(
+        email=creator_user.email if creator_user is not None else None,
+        redirected_to_creator=True,
+    )
