@@ -500,6 +500,7 @@ def _validate_column_headers_for_rule(
     normalized_required = [
         _normalize_type_label(value) for value in required_headers
     ]
+    assignment_header_rule = validated_rule_type in _ASSIGNMENT_HEADER_RULE_TYPES
 
     if required_headers:
         invalid_assignments = [
@@ -520,23 +521,24 @@ def _validate_column_headers_for_rule(
                 + "."
             )
 
-        missing_columns = [
-            header
-            for header in required_headers
-            if not _header_matches(header, labels)
-        ]
-        if missing_columns:
-            rule_name = rule_names_by_type.get(validated_rule_type, column.name)
-            missing_str = ", ".join(sorted(set(missing_columns)))
-            raise ValueError(
-                "La regla '"
-                + rule_name
-                + "' requiere que la plantilla incluya las columnas relacionadas en sus 'Header rule': "
-                + missing_str
-                + "."
-            )
+        if not assignment_header_rule:
+            missing_columns = [
+                header
+                for header in required_headers
+                if not _header_matches(header, labels)
+            ]
+            if missing_columns:
+                rule_name = rule_names_by_type.get(validated_rule_type, column.name)
+                missing_str = ", ".join(sorted(set(missing_columns)))
+                raise ValueError(
+                    "La regla '"
+                    + rule_name
+                    + "' requiere que la plantilla incluya las columnas relacionadas en sus 'Header rule': "
+                    + missing_str
+                    + "."
+                )
 
-    if header_values and not skip_header_enforcement:
+    if header_values and not skip_header_enforcement and not assignment_header_rule:
         missing_headers = [
             header
             for header in header_values
@@ -572,7 +574,6 @@ def ensure_rule_header_dependencies(
     labels = _build_available_labels(active_columns)
     rule_cache: dict[int, Any] = {}
     validation_results: dict[tuple[int, str], _RuleHeaderValidationResult] = {}
-    assigned_headers: dict[tuple[int, str], dict[str, str]] = {}
 
     for column in active_columns:
         aggregated_headers = normalize_rule_header(column.rule_header)
@@ -600,10 +601,6 @@ def ensure_rule_header_dependencies(
             headers = normalize_rule_header(assignment.headers)
             if _rule_payload_uses_assignment_header(rule_payload):
                 header_values = list(headers) if headers else []
-                if len(header_values) > 1:
-                    raise ValueError(
-                        f"La columna '{column.name}' solo puede definir un 'header rule' por cada regla asignada."
-                    )
             else:
                 header_values = []
 
@@ -641,7 +638,6 @@ def ensure_rule_header_dependencies(
                 continue
 
             expected_headers = result.normalized_required_headers
-            assignments = assigned_headers.setdefault(key, {})
             for normalized, original in normalized_header_values.items():
                 if expected_headers and normalized not in expected_headers:
                     raise ValueError(
@@ -653,41 +649,6 @@ def ensure_rule_header_dependencies(
                         + original
                         + "."
                     )
-
-                previous_column = assignments.get(normalized)
-                if previous_column and previous_column != column.name:
-                    raise ValueError(
-                        "El 'header rule' '"
-                        + original
-                        + "' de la regla '"
-                        + result.rule_name
-                        + "' ya fue asignado a la columna '"
-                        + previous_column
-                        + "'."
-                    )
-                assignments[normalized] = column.name
-
-    for key, result in validation_results.items():
-        if not result.normalized_required_headers:
-            continue
-
-        assignments = assigned_headers.get(key, {})
-        missing_assignments = [
-            header
-            for header, normalized in zip(
-                result.required_headers, result.normalized_required_headers
-            )
-            if normalized not in assignments
-        ]
-        if missing_assignments:
-            missing_str = ", ".join(sorted(set(missing_assignments)))
-            raise ValueError(
-                "La regla '"
-                + result.rule_name
-                + "' requiere que se asignen todos sus 'header rule'. Faltan: "
-                + missing_str
-                + "."
-            )
 
 
 __all__ = [

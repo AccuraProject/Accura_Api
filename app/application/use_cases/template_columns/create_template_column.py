@@ -24,6 +24,7 @@ from .validators import ensure_rule_header_dependencies
 
 
 _ASSIGNMENT_HEADER_RULE_TYPES = {"lista compleja", "lista completa", "dependencia"}
+_DEFAULT_COLUMN_DATA_TYPE = "Texto"
 
 
 @dataclass(frozen=True)
@@ -195,7 +196,7 @@ def _prepare_rule_assignments(
     rules: Sequence[NewTemplateColumnRuleData] | None,
 ) -> tuple[tuple[TemplateColumnRule, ...], str]:
     if not rules:
-        raise ValueError("Debe asociar al menos una regla a la columna.")
+        return (), _DEFAULT_COLUMN_DATA_TYPE
 
     normalized_rules: list[TemplateColumnRule] = []
     normalized_type: str | None = None
@@ -254,7 +255,7 @@ def _prepare_rule_assignments(
         normalized_type = fallback_type
 
     if normalized_type is None:
-        raise ValueError("Debe asociar al menos una regla válida a la columna.")
+        return (), _DEFAULT_COLUMN_DATA_TYPE
 
     return tuple(normalized_rules), normalized_type
 
