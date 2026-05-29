@@ -2451,6 +2451,36 @@ def _validate_dependency_rule(
                 return True
         return False
 
+    def _config_belongs_to_current_column(config: Mapping[str, Any]) -> bool:
+        """Infer whether a direct dependency config should validate this column."""
+
+        matched_current = False
+        matched_other = False
+
+        for param_key in config:
+            if not isinstance(param_key, str) or not param_key.strip():
+                continue
+
+            normalized_param = _normalize_type_label(param_key)
+            param_headers = _candidate_headers(param_key, normalized_param)
+
+            if _targets_field(
+                param_headers,
+                normalized_column_label,
+                column_name,
+            ):
+                matched_current = True
+                continue
+
+            if any(header in row_context and header != column_name for header in param_headers):
+                matched_other = True
+
+        if matched_current:
+            return True
+        if matched_other:
+            return False
+        return normalized_column_label != normalized_dependent_name
+
     for entry in specific_rules:
         if not isinstance(entry, Mapping) or len(entry) < 2:
             accumulated_errors.append(
@@ -2556,7 +2586,7 @@ def _validate_dependency_rule(
                 # configuración contiene sus parámetros, aplicamos ese validador
                 # sobre la columna actual aunque la clave no coincida con el
                 # nombre visible de la columna.
-                if normalized_column_label != normalized_dependent_name:
+                if _config_belongs_to_current_column(config):
                     validators.append((raw_key, handler, config))
                 continue
 
