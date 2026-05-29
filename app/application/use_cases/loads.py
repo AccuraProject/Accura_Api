@@ -2451,11 +2451,26 @@ def _validate_dependency_rule(
                 return True
         return False
 
-    def _config_belongs_to_current_column(config: Mapping[str, Any]) -> bool:
-        """Infer whether a direct dependency config should validate this column."""
+    def _config_belongs_to_current_column(
+        raw_label: str, config: Mapping[str, Any]
+    ) -> bool:
+        """Infer whether a direct dependency config should validate this column.
+
+        Prefer explicit header mappings first. If we cannot map the dependency
+        subtype (`Documento`, `Texto`, etc.) to the current column with enough
+        confidence, skip the validator instead of applying it to the wrong
+        field.
+        """
 
         matched_current = False
         matched_other = False
+        normalized_raw_label = _normalize_type_label(raw_label)
+        raw_headers = _candidate_headers(raw_label, normalized_raw_label)
+
+        if _targets_field(raw_headers, normalized_column_label, column_name):
+            matched_current = True
+        elif any(header in row_context and header != column_name for header in raw_headers):
+            matched_other = True
 
         for param_key in config:
             if not isinstance(param_key, str) or not param_key.strip():
@@ -2479,7 +2494,7 @@ def _validate_dependency_rule(
             return True
         if matched_other:
             return False
-        return normalized_column_label != normalized_dependent_name
+        return False
 
     for entry in specific_rules:
         if not isinstance(entry, Mapping) or len(entry) < 2:
@@ -2586,7 +2601,7 @@ def _validate_dependency_rule(
                 # configuración contiene sus parámetros, aplicamos ese validador
                 # sobre la columna actual aunque la clave no coincida con el
                 # nombre visible de la columna.
-                if _config_belongs_to_current_column(config):
+                if _config_belongs_to_current_column(raw_key, config):
                     validators.append((raw_key, handler, config))
                 continue
 
