@@ -700,11 +700,7 @@ def _validate_dataframe(
                     current_value = candidate_value
                     row_snapshot[column.name] = current_value
 
-                blocking_errors = [
-                    error for error in column_errors if not _is_observation_message(error)
-                ]
-
-                if not blocking_errors:
+                if not column_errors:
                     converted_value = current_value
             elif parser is not None:
                 parsed_value, parse_error = parser(normalized_value)
@@ -715,10 +711,7 @@ def _validate_dataframe(
 
             if column_errors:
                 observations[idx].extend(column_errors)
-                if any(not _is_observation_message(error) for error in column_errors):
-                    row_is_valid[idx] = False
-                else:
-                    df.at[idx, column.name] = converted_value
+                row_is_valid[idx] = False
             else:
                 df.at[idx, column.name] = converted_value
 
@@ -801,22 +794,8 @@ def _summarize_observations(messages: Sequence[str]) -> str:
     return " | ".join(summary)
 
 
-_OBSERVATION_PREFIX = "__observation__::"
-
-
-def _is_observation_message(message: str) -> bool:
-    return str(message or "").startswith(_OBSERVATION_PREFIX)
-
-
-def _strip_observation_prefix(message: str) -> str:
-    text = str(message or "")
-    if text.startswith(_OBSERVATION_PREFIX):
-        return text[len(_OBSERVATION_PREFIX) :].strip()
-    return text
-
-
 def _simplify_error_message(message: str) -> str:
-    text = _strip_observation_prefix(message).strip()
+    text = str(message or "").strip()
     if not text:
         return ""
 
@@ -1516,18 +1495,6 @@ def _compose_error(
     return detail
 
 
-def _compose_observation(
-    fallback: str,
-    *,
-    column_name: str | None = None,
-    cell_value: Any | None = None,
-) -> str:
-    detail = fallback
-    if column_name is not None:
-        detail = _compose_column_error_detail(column_name, cell_value, fallback)
-    return f"{_OBSERVATION_PREFIX}{detail}"
-
-
 def _apply_duplicate_rules(
     dataframe: DataFrame,
     duplicate_rules: Sequence[Mapping[str, Any]],
@@ -1765,7 +1732,6 @@ def _validate_number_rule(
     **_: Any,
 ) -> tuple[Any, list[str]]:
     errors: list[str] = []
-    observations: list[str] = []
     try:
         numeric_value = Decimal(str(value))
     except (InvalidOperation, ValueError):
@@ -1780,15 +1746,6 @@ def _validate_number_rule(
             )
         )
         return value, errors
-
-    if isinstance(value, str):
-        observations.append(
-            _compose_observation(
-                "valor convertido a numérico",
-                column_name=column_name,
-                cell_value=value,
-            )
-        )
 
     decimals_allowed = rule_config.get("Número de decimales")
     if isinstance(decimals_allowed, int):
@@ -1858,11 +1815,11 @@ def _validate_number_rule(
             )
 
     if errors:
-        return value, [*observations, *errors]
+        return value, errors
 
     if isinstance(decimals_allowed, int) and decimals_allowed == 0:
-        return int(numeric_value), observations
-    return float(numeric_value), observations
+        return int(numeric_value), []
+    return float(numeric_value), []
 
 
 def _validate_list_rule(
