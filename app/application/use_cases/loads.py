@@ -57,6 +57,7 @@ _REPORT_PREFIX = "Reports"
 _EXCEL_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _CSV_CONTENT_TYPE = "text/csv"
 _DOWNLOAD_DIRECTORY = Path(tempfile.gettempdir()) / "accura_api_downloads"
+_GROUPED_HEADER_RULE_TYPES = {"lista compleja", "lista completa", "dependencia"}
 
 
 def _sanitize_filename(name: str) -> str:
@@ -624,29 +625,24 @@ def _validate_dataframe(
 
     normalized_column_lookup: dict[str, str] = {}
     column_token_lookup: dict[str, tuple[str, ...]] = {}
-    rule_header_lookup: dict[int, dict[str, str]] = {}
+    rule_header_lookup = _build_grouped_rule_header_lookup(columns, rules)
 
     for column in columns:
         normalized_name = _normalize_type_label(column.name)
         if normalized_name and normalized_name not in normalized_column_lookup:
             normalized_column_lookup[normalized_name] = column.name
         column_token_lookup[column.name] = _tokenize_label(column.name)
-        for assignment in column.rules:
-            if not assignment.headers:
-                continue
-            headers_for_rule = rule_header_lookup.setdefault(assignment.id, {})
-            for header in assignment.headers:
-                normalized_header = _normalize_type_label(header)
-                if normalized_header and normalized_header not in headers_for_rule:
-                    headers_for_rule[normalized_header] = column.name
 
     for column in columns:
         normalized_type = _normalize_type_label(column.data_type)
         parser = _TYPE_PARSERS.get(normalized_type)
         column_rule_definitions = [
-            (rules[rule_id], rule_header_lookup.get(rule_id, {}))
-            for rule_id in column.rule_ids
-            if rule_id in rules
+            (
+                rules[assignment.id],
+                rule_header_lookup.get((column.name, assignment.id), {}),
+            )
+            for assignment in column.rules
+            if assignment.id in rules
         ]
         if parser is None and not column_rule_definitions:
             raise ValueError(
@@ -2859,6 +2855,96 @@ def _extract_allowed_values(rule_config: Mapping[str, Any]) -> list[Any]:
         if isinstance(values, list):
             return values
     return []
+
+
+def _build_grouped_rule_header_lookup(
+    columns: Sequence[TemplateColumn],
+    rules: Mapping[int, dict[str, Any] | list[Any]],
+) -> dict[tuple[str, int], dict[str, str]]:
+    grouped_lookup: dict[tuple[str, int], dict[str, str]] = {}
+    occurrences_by_rule: dict[int, list[tuple[str, int | None, tuple[str, ...]]]] = {}
+    expected_headers_by_rule: dict[int, set[str]] = {}
+
+    for column in columns:
+        for assignment in column.rules:
+            if assignment.id not in rules or not assignment.headers:
+                continue
+
+            rule_type = _extract_validation_rule_type(rules[assignment.id])
+            if rule_type not in _GROUPED_HEADER_RULE_TYPES:
+                continue
+
+            normalized_headers = tuple(
+                normalized_header
+                for header in assignment.headers
+                for normalized_header in [_normalize_type_label(header)]
+                if normalized_header
+            )
+            if not normalized_headers:
+                continue
+
+            occurrences_by_rule.setdefault(assignment.id, []).append(
+                (column.name, assignment.group, normalized_headers)
+            )
+            expected_headers_by_rule.setdefault(assignment.id, set()).update(
+                normalized_headers
+            )
+
+    for rule_id, occurrences in occurrences_by_rule.items():
+        grouped_occurrences: dict[int, list[tuple[str, tuple[str, ...]]]] = {}
+        all_grouped = all(group is not None and group > 0 for _, group, _ in occurrences)
+
+        if all_grouped:
+            for column_name, group, normalized_headers in occurrences:
+                grouped_occurrences.setdefault(int(group), []).append(
+                    (column_name, normalized_headers)
+                )
+        else:
+            expected_headers = expected_headers_by_rule.get(rule_id, set())
+            current_group = 1
+            pending_entries: list[tuple[str, tuple[str, ...]]] = []
+            covered_headers: set[str] = set()
+
+            for column_name, _group, normalized_headers in occurrences:
+                pending_entries.append((column_name, normalized_headers))
+                covered_headers.update(normalized_headers)
+
+                if expected_headers and expected_headers.issubset(covered_headers):
+                    grouped_occurrences[current_group] = list(pending_entries)
+                    current_group += 1
+                    pending_entries = []
+                    covered_headers = set()
+
+            if pending_entries:
+                grouped_occurrences[current_group] = list(pending_entries)
+
+        for entries in grouped_occurrences.values():
+            header_map: dict[str, str] = {}
+            for column_name, normalized_headers in entries:
+                for normalized_header in normalized_headers:
+                    header_map.setdefault(normalized_header, column_name)
+
+            for column_name, _normalized_headers in entries:
+                grouped_lookup[(column_name, rule_id)] = dict(header_map)
+
+    return grouped_lookup
+
+
+def _extract_validation_rule_type(rule_definition: dict[str, Any] | list[Any]) -> str:
+    if isinstance(rule_definition, Mapping):
+        definitions = [rule_definition]
+    elif isinstance(rule_definition, list):
+        definitions = [entry for entry in rule_definition if isinstance(entry, Mapping)]
+    else:
+        definitions = []
+
+    for definition in definitions:
+        candidate = definition.get("Tipo de dato")
+        if isinstance(candidate, str):
+            normalized_candidate = _normalize_type_label(candidate)
+            if normalized_candidate:
+                return normalized_candidate
+    return ""
 
 
 def _extract_specific_dependency_rules(

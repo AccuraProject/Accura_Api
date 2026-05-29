@@ -137,12 +137,17 @@ def create_template_column(
         rule_repository=rule_repository,
     )
 
-    ensure_rule_header_dependencies(
+    prepared_columns = assign_rule_groups(
         columns=[*existing_columns, column],
         rule_repository=rule_repository,
     )
 
-    saved_column = column_repository.create(column)
+    ensure_rule_header_dependencies(
+        columns=prepared_columns,
+        rule_repository=rule_repository,
+    )
+
+    saved_column = column_repository.create(prepared_columns[-1])
 
     return saved_column
 
@@ -183,12 +188,17 @@ def create_template_columns(
         )
         new_columns.append(column)
 
-    ensure_rule_header_dependencies(
+    prepared_columns = assign_rule_groups(
         columns=[*existing_columns, *new_columns],
         rule_repository=rule_repository,
     )
 
-    return column_repository.create_many(new_columns)
+    ensure_rule_header_dependencies(
+        columns=prepared_columns,
+        rule_repository=rule_repository,
+    )
+
+    return column_repository.create_many(prepared_columns[len(existing_columns) :])
 
 
 def _prepare_rule_assignments(
@@ -258,6 +268,96 @@ def _prepare_rule_assignments(
         return (), _DEFAULT_COLUMN_DATA_TYPE
 
     return tuple(normalized_rules), normalized_type
+
+
+def assign_rule_groups(
+    *,
+    columns: Sequence[TemplateColumn],
+    rule_repository: RuleRepository,
+) -> list[TemplateColumn]:
+    if not columns:
+        return []
+
+    grouped_rule_types = {"lista compleja", "lista completa", "dependencia"}
+    rule_cache: dict[int, Any] = {}
+    grouped_assignments: dict[int, list[tuple[int, int, tuple[str, ...]]]] = {}
+    expected_headers_by_rule: dict[int, set[str]] = {}
+
+    for column_index, column in enumerate(columns):
+        for rule_index, assignment in enumerate(column.rules):
+            if not assignment.headers:
+                continue
+
+            rule = rule_cache.get(assignment.id)
+            if rule is None:
+                rule = rule_repository.get(assignment.id)
+                if rule is None or not rule.is_active:
+                    continue
+                rule_cache[assignment.id] = rule
+
+            normalized_type = _normalize_type_label(_extract_rule_type(rule.rule) or "")
+            if normalized_type not in grouped_rule_types:
+                continue
+
+            normalized_headers = tuple(
+                normalized_header
+                for header in assignment.headers
+                for normalized_header in [_normalize_type_label(header)]
+                if normalized_header
+            )
+            if not normalized_headers:
+                continue
+
+            grouped_assignments.setdefault(assignment.id, []).append(
+                (column_index, rule_index, normalized_headers)
+            )
+            expected_headers_by_rule.setdefault(assignment.id, set()).update(
+                normalized_headers
+            )
+
+    assignment_groups: dict[tuple[int, int], int] = {}
+    for rule_id, occurrences in grouped_assignments.items():
+        expected_headers = expected_headers_by_rule.get(rule_id, set())
+        if not expected_headers:
+            continue
+
+        pending_keys: list[tuple[int, int]] = []
+        covered_headers: set[str] = set()
+        current_group = 1
+
+        for column_index, rule_index, normalized_headers in occurrences:
+            pending_keys.append((column_index, rule_index))
+            covered_headers.update(normalized_headers)
+
+            if expected_headers.issubset(covered_headers):
+                for key in pending_keys:
+                    assignment_groups[key] = current_group
+                current_group += 1
+                pending_keys = []
+                covered_headers = set()
+
+        if pending_keys:
+            for key in pending_keys:
+                assignment_groups[key] = current_group
+
+    prepared_columns: list[TemplateColumn] = []
+    for column_index, column in enumerate(columns):
+        updated_rules: list[TemplateColumnRule] = []
+        changed = False
+        for rule_index, assignment in enumerate(column.rules):
+            group = assignment_groups.get((column_index, rule_index))
+            if assignment.group != group:
+                changed = True
+            updated_rules.append(
+                TemplateColumnRule(
+                    id=assignment.id,
+                    headers=assignment.headers,
+                    group=group,
+                )
+            )
+        prepared_columns.append(column.replace_rules(updated_rules) if changed else column)
+
+    return prepared_columns
 
 
 def _normalize_rule_id(value: Any) -> int:

@@ -19,6 +19,7 @@ from .validators import ensure_rule_header_dependencies
 from .create_template_column import (
     NewTemplateColumnRuleData,
     _prepare_rule_assignments,
+    assign_rule_groups,
 )
 
 
@@ -96,9 +97,17 @@ def update_template_column(
         updated_column if col.id == updated_column.id else col for col in existing_columns
     ]
 
-    ensure_rule_header_dependencies(
+    prepared_columns = assign_rule_groups(
         columns=updated_columns,
         rule_repository=rule_repository,
     )
 
-    return column_repository.update(updated_column)
+    ensure_rule_header_dependencies(
+        columns=prepared_columns,
+        rule_repository=rule_repository,
+    )
+
+    prepared_column = next(
+        column for column in prepared_columns if column.id == updated_column.id
+    )
+    return column_repository.update(prepared_column)

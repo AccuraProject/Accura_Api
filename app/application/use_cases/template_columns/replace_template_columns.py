@@ -16,6 +16,7 @@ from app.infrastructure.repositories import (
 from .create_template_column import (
     NewTemplateColumnData,
     _build_column,
+    assign_rule_groups,
     create_template_columns,
 )
 from .artifacts import refresh_template_resources
@@ -64,8 +65,13 @@ def replace_template_columns(
             )
         )
 
-    ensure_rule_header_dependencies(
+    prepared_columns = assign_rule_groups(
         columns=validated_columns,
+        rule_repository=rule_repository,
+    )
+
+    ensure_rule_header_dependencies(
+        columns=prepared_columns,
         rule_repository=rule_repository,
     )
 
