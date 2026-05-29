@@ -17,7 +17,7 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Callable
 from uuid import uuid4
-from sqlalchemy import MetaData, Table, insert, select
+from sqlalchemy import Boolean, Date, DateTime, Float, Integer, MetaData, Numeric, Table, insert, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -851,15 +851,62 @@ def _persist_rows(
 
     metadata = MetaData()
     table = Table(table_name, metadata, autoload_with=engine)
+    sanitized_records: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        is_valid = row_is_valid[index] if index < len(row_is_valid) else False
+        sanitized_records.append(
+            _sanitize_record_for_insert(record, table=table, row_is_valid=is_valid)
+        )
     try:
         with engine.begin() as connection:
-            connection.execute(insert(table), records)
+            connection.execute(insert(table), sanitized_records)
     except SQLAlchemyError as exc:  # pragma: no cover - defensive passthrough
         raise RuntimeError(
             f"No se pudo insertar la información validada en la tabla '{table_name}'"
         ) from exc
 
     return sum(1 for flag in row_is_valid if flag)
+
+
+def _sanitize_record_for_insert(
+    record: Mapping[str, Any], *, table: Table, row_is_valid: bool
+) -> dict[str, Any]:
+    sanitized = dict(record)
+    if row_is_valid:
+        return sanitized
+
+    for key, value in list(sanitized.items()):
+        if key not in table.c:
+            continue
+        if key in {"id", "numero_operacion", "status", "observaciones"}:
+            continue
+        sanitized[key] = _coerce_value_for_column(value, table.c[key].type)
+    return sanitized
+
+
+def _coerce_value_for_column(value: Any, column_type: Any) -> Any:
+    if value is None:
+        return None
+
+    parser: Callable[[Any], tuple[Any, str | None]] | None = None
+    if isinstance(column_type, Integer):
+        parser = _parse_integer
+    elif isinstance(column_type, (Float, Numeric)):
+        parser = _parse_float
+    elif isinstance(column_type, Boolean):
+        parser = _parse_boolean
+    elif isinstance(column_type, DateTime):
+        parser = _parse_datetime
+    elif isinstance(column_type, Date):
+        parser = _parse_date
+
+    if parser is None:
+        return value
+
+    parsed_value, parse_error = parser(value)
+    if parse_error:
+        return None
+    return parsed_value
 
 
 def _generate_report(
