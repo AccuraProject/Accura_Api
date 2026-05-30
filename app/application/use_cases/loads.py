@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import math
 import re
 import tempfile
@@ -15,6 +16,7 @@ from io import BytesIO, StringIO
 from pathlib import Path
 from difflib import SequenceMatcher
 from functools import lru_cache
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Callable
 from uuid import uuid4
 from sqlalchemy import Boolean, Date, DateTime, Float, Integer, MetaData, Numeric, Table, insert, select
@@ -58,6 +60,7 @@ _EXCEL_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheet
 _CSV_CONTENT_TYPE = "text/csv"
 _DOWNLOAD_DIRECTORY = Path(tempfile.gettempdir()) / "accura_api_downloads"
 _GROUPED_HEADER_RULE_TYPES = {"lista compleja", "lista completa", "dependencia"}
+logger = logging.getLogger(__name__)
 
 
 def _sanitize_filename(name: str) -> str:
@@ -189,6 +192,7 @@ def process_template_load(
 ) -> Load:
     """Execute the validation flow for an existing load."""
 
+    started_processing = perf_counter()
     load_repo = LoadRepository(session)
     load = load_repo.get(load_id)
     if load is None:
@@ -212,13 +216,42 @@ def process_template_load(
         raise ValueError("La plantilla no tiene columnas activas para importar")
 
     try:
+        stage_started = perf_counter()
         dataframe = _read_source_file(file_bytes, suffix)
+        logger.info(
+            "Load %s read source file in %.3fs",
+            load_id,
+            perf_counter() - stage_started,
+        )
+
+        stage_started = perf_counter()
         dataframe = _normalize_dataframe(dataframe)
         _ensure_dataframe_has_rows(dataframe)
         _validate_headers(dataframe, columns)
+        logger.info(
+            "Load %s normalized data and validated headers in %.3fs",
+            load_id,
+            perf_counter() - stage_started,
+        )
 
+        stage_started = perf_counter()
         rules = _load_rules(session, columns)
+        logger.info(
+            "Load %s loaded %s active rules in %.3fs",
+            load_id,
+            len(rules),
+            perf_counter() - stage_started,
+        )
+
+        stage_started = perf_counter()
         validated_df, row_is_valid = _validate_dataframe(dataframe, columns, rules)
+        logger.info(
+            "Load %s validated %s rows across %s columns in %.3fs",
+            load_id,
+            len(validated_df.index),
+            len(columns),
+            perf_counter() - stage_started,
+        )
 
         operation_number = load.id or 0
         if not operation_number:
@@ -227,6 +260,7 @@ def process_template_load(
             column.name: derive_column_identifier(column.name) for column in columns
         }
 
+        stage_started = perf_counter()
         processed_rows = _persist_rows(
             validated_df,
             row_is_valid,
@@ -234,7 +268,15 @@ def process_template_load(
             operation_number=operation_number,
             column_identifier_map=identifier_map,
         )
+        logger.info(
+            "Load %s persisted %s rows to temporary table '%s' in %.3fs",
+            load_id,
+            len(validated_df.index),
+            template.table_name,
+            perf_counter() - stage_started,
+        )
 
+        stage_started = perf_counter()
         report_df = _prepare_report_dataframe(
             validated_df, operation_number=operation_number
         )
@@ -250,6 +292,11 @@ def process_template_load(
             source_df,
             template,
             suffix,
+        )
+        logger.info(
+            "Load %s generated report artifacts in %.3fs",
+            load_id,
+            perf_counter() - stage_started,
         )
 
         total_rows = len(validated_df.index)
@@ -289,6 +336,11 @@ def process_template_load(
         )
         notify_load_validated_success(
             session, load=load, template=template, user=user
+        )
+        logger.info(
+            "Load %s finished end-to-end in %.3fs",
+            load_id,
+            perf_counter() - started_processing,
         )
     except Exception as exc:  # pragma: no cover - defensive path
         failed_load = _mark_load_as_failed(load_repo, load, str(exc))
@@ -603,12 +655,7 @@ def _load_rules(
     if not rule_ids:
         return {}
     repository = RuleRepository(session)
-    rules: dict[int, dict[str, Any] | list[Any]] = {}
-    for rule_id in rule_ids:
-        rule = repository.get(rule_id)
-        if rule and rule.is_active:
-            rules[rule_id] = rule.rule
-    return rules
+    return repository.get_active_map(tuple(rule_ids))
 
 
 def _validate_dataframe(
@@ -632,6 +679,10 @@ def _validate_dataframe(
         if normalized_name and normalized_name not in normalized_column_lookup:
             normalized_column_lookup[normalized_name] = column.name
         column_token_lookup[column.name] = _tokenize_label(column.name)
+        if column.name not in df.columns:
+            df[column.name] = pd.Series([None] * len(df.index), dtype=object)
+
+    row_snapshots = df.to_dict(orient="records")
 
     for column in columns:
         normalized_type = _normalize_type_label(column.data_type)
@@ -649,8 +700,6 @@ def _validate_dataframe(
                 f"Tipo de dato desconocido para la columna '{column.name}'"
             )
 
-        if column.name not in df.columns:
-            df[column.name] = pd.Series([None] * len(df.index), dtype=object)
         series = df[column.name]
         if column_rule_definitions:
             for rule_definition, _rule_headers in column_rule_definitions:
@@ -674,7 +723,7 @@ def _validate_dataframe(
         for idx, raw_value in enumerate(series.tolist()):
             normalized_value = _normalize_cell_value(raw_value)
             df.at[idx, column.name] = normalized_value
-            row_snapshot = df.iloc[idx].to_dict()
+            row_snapshot = row_snapshots[idx]
             row_snapshot[column.name] = normalized_value
 
             column_errors: list[str] = []
@@ -714,6 +763,7 @@ def _validate_dataframe(
                 row_is_valid[idx] = False
             else:
                 df.at[idx, column.name] = converted_value
+                row_snapshot[column.name] = converted_value
 
     if duplicate_rules:
         _apply_duplicate_rules(df, duplicate_rules, observations, row_is_valid)
