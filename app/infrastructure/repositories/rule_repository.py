@@ -128,12 +128,11 @@ class RuleRepository:
             self.session.query(RuleModel)
             .filter(
                 RuleModel.deleted == false(),
-                RuleModel.is_active.is_(True),
                 RuleModel.id.in_(normalized_ids),
             )
             .all()
         )
-        return {model.id: model.rule for model in models}
+        return {model.id: model.rule for model in models if model.is_active}
 
     def create(self, rule: Rule) -> Rule:
         model = RuleModel()

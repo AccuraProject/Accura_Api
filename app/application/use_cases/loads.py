@@ -216,6 +216,13 @@ def process_template_load(
         raise ValueError("La plantilla no tiene columnas activas para importar")
 
     try:
+        logger.info(
+            "Load %s started for file '%s' (%s bytes) on template '%s'",
+            load_id,
+            filename,
+            len(file_bytes),
+            template.table_name,
+        )
         stage_started = perf_counter()
         dataframe = _read_source_file(file_bytes, suffix)
         logger.info(
