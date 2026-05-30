@@ -71,5 +71,5 @@ jobs:
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
-          app-name: 'accura-api'
+          app-name: 'api-accura'
           slot-name: 'Production'
