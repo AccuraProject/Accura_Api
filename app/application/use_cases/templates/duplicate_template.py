@@ -3,9 +3,10 @@
 from sqlalchemy.orm import Session
 
 from app.application.use_cases.template_columns.artifacts import refresh_template_resources
-from app.application.use_cases.template_columns.validators import (
-    ensure_rule_header_dependencies,
+from app.application.use_cases.template_columns.create_template_column import (
+    assign_rule_groups,
 )
+from app.application.use_cases.template_columns.validators import ensure_rule_header_dependencies
 from app.application.use_cases.templates.create_template import create_template
 from app.domain.entities import Template, TemplateColumn
 from app.infrastructure.repositories import (
@@ -139,12 +140,17 @@ def duplicate_template(
             )
         )
 
-    ensure_rule_header_dependencies(
+    prepared_columns = assign_rule_groups(
         columns=new_columns,
         rule_repository=rule_repository,
     )
 
-    column_repository.create_many(new_columns)
+    ensure_rule_header_dependencies(
+        columns=prepared_columns,
+        rule_repository=rule_repository,
+    )
+
+    column_repository.create_many(prepared_columns)
     refresh_template_resources(
         session,
         duplicated_template.id,

@@ -263,10 +263,22 @@ class TemplateRepository:
         for rule_model in model.rules:
             if getattr(rule_model, "deleted", False):
                 continue
-            headers = headers_map.get(rule_model.id)
+            header_entry = headers_map.get(rule_model.id)
+            headers = (
+                header_entry.get("headers")
+                if isinstance(header_entry, dict)
+                else header_entry
+            )
+            group = (
+                header_entry.get("group")
+                if isinstance(header_entry, dict)
+                else None
+            )
             if headers is None and fallback_headers is not None:
                 headers = fallback_headers
-            rules.append(TemplateColumnRule(id=rule_model.id, headers=headers))
+            rules.append(
+                TemplateColumnRule(id=rule_model.id, headers=headers, group=group)
+            )
 
         return TemplateColumn(
             id=model.id,

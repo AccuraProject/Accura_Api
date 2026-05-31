@@ -471,16 +471,19 @@ def _validate_column_headers_for_rule(
                 f"La regla '{_resolve_rule_name(definition, column)}' debe definir encabezados válidos."
             )
 
-        missing = [
-            header
-            for header in valid_headers
-            if not _header_matches(header, labels)
-        ]
-        if missing:
-            missing_str = ", ".join(sorted(set(missing)))
-            raise ValueError(
-                f"La regla '{_resolve_rule_name(definition, column)}' requiere que la plantilla incluya las columnas {missing_str}."
-            )
+        # For assignment-based rules, the template columns may have arbitrary names
+        # and the relationship is expressed through each column's "header rule".
+        if rule_type not in _ASSIGNMENT_HEADER_RULE_TYPES:
+            missing = [
+                header
+                for header in valid_headers
+                if not _header_matches(header, labels)
+            ]
+            if missing:
+                missing_str = ", ".join(sorted(set(missing)))
+                raise ValueError(
+                    f"La regla '{_resolve_rule_name(definition, column)}' requiere que la plantilla incluya las columnas {missing_str}."
+                )
 
     if header_values and not allows_column_header:
         raise ValueError(
@@ -574,6 +577,7 @@ def ensure_rule_header_dependencies(
     labels = _build_available_labels(active_columns)
     rule_cache: dict[int, Any] = {}
     validation_results: dict[tuple[int, str], _RuleHeaderValidationResult] = {}
+    assignment_header_usage: dict[tuple[int, str], dict[str, int]] = {}
 
     for column in active_columns:
         aggregated_headers = normalize_rule_header(column.rule_header)
@@ -649,6 +653,53 @@ def ensure_rule_header_dependencies(
                         + original
                         + "."
                     )
+            if result.rule_type == "lista completa" and expected_headers:
+                usage = assignment_header_usage.setdefault(
+                    key,
+                    {header: 0 for header in expected_headers},
+                )
+                for normalized in normalized_header_values:
+                    if normalized in usage:
+                        usage[normalized] += 1
+
+    for key, result in validation_results.items():
+        if result.rule_type != "lista completa":
+            continue
+
+        expected_headers = result.normalized_required_headers
+        if not expected_headers:
+            continue
+
+        usage = assignment_header_usage.get(
+            key,
+            {header: 0 for header in expected_headers},
+        )
+        missing_headers = [
+            header
+            for header, normalized in zip(result.required_headers, expected_headers, strict=False)
+            if usage.get(normalized, 0) == 0
+        ]
+        if missing_headers:
+            missing_str = ", ".join(sorted(set(missing_headers)))
+            raise ValueError(
+                "La regla '"
+                + result.rule_name
+                + "' debe tener columnas asignadas para todos sus 'header rule'. Faltan: "
+                + missing_str
+                + "."
+            )
+
+        usage_counts = {usage.get(normalized, 0) for normalized in expected_headers}
+        if len(usage_counts) > 1:
+            expected_summary = ", ".join(result.required_headers)
+            raise ValueError(
+                "La regla '"
+                + result.rule_name
+                + "' debe repartir sus 'header rule' de forma completa y equilibrada entre las columnas asignadas. "
+                + "Se esperaba la misma cantidad para: "
+                + expected_summary
+                + "."
+            )
 
 
 __all__ = [

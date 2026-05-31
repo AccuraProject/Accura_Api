@@ -117,6 +117,23 @@ class RuleRepository:
         model = self._get_model(id=rule_id)
         return self._to_entity(model) if model else None
 
+    def get_active_map(self, rule_ids: Sequence[int]) -> dict[int, Any]:
+        """Return active rule payloads indexed by id for the provided identifiers."""
+
+        normalized_ids = sorted({int(rule_id) for rule_id in rule_ids if rule_id})
+        if not normalized_ids:
+            return {}
+
+        models = (
+            self.session.query(RuleModel)
+            .filter(
+                RuleModel.deleted == false(),
+                RuleModel.id.in_(normalized_ids),
+            )
+            .all()
+        )
+        return {model.id: model.rule for model in models if model.is_active}
+
     def create(self, rule: Rule) -> Rule:
         model = RuleModel()
         self._apply_entity_to_model(model, rule)

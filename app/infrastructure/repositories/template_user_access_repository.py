@@ -207,6 +207,12 @@ class TemplateUserAccessRepository:
         self.session.refresh(model)
         return self._to_entity(model)
 
+    def delete_by_template_id(self, template_id: int) -> None:
+        self.session.query(TemplateUserAccessModel).filter(
+            TemplateUserAccessModel.template_id == template_id
+        ).delete(synchronize_session=False)
+        self.session.commit()
+
     def _expire_outdated_accesses(
         self,
         *,

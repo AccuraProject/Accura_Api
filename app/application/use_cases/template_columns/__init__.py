@@ -3,6 +3,7 @@
 from .create_template_column import (
     NewTemplateColumnData,
     NewTemplateColumnRuleData,
+    assign_rule_groups,
     create_template_column,
     create_template_columns,
 )
@@ -15,7 +16,7 @@ from .update_template_column import update_template_column
 __all__ = [
     "NewTemplateColumnData",
     "NewTemplateColumnRuleData",
-    "TemplateColumnReplacementData",
+    "assign_rule_groups",
     "create_template_column",
     "create_template_columns",
     "delete_template_column",

@@ -102,10 +102,22 @@ class TemplateColumnRepository:
         for rule_model in model.rules:
             if getattr(rule_model, "deleted", False):
                 continue
-            headers = headers_map.get(rule_model.id)
+            header_entry = headers_map.get(rule_model.id)
+            headers = (
+                header_entry.get("headers")
+                if isinstance(header_entry, dict)
+                else header_entry
+            )
+            group = (
+                header_entry.get("group")
+                if isinstance(header_entry, dict)
+                else None
+            )
             if headers is None and fallback_headers is not None:
                 headers = fallback_headers
-            rules.append(TemplateColumnRule(id=rule_model.id, headers=headers))
+            rules.append(
+                TemplateColumnRule(id=rule_model.id, headers=headers, group=group)
+            )
 
         return TemplateColumn(
             id=model.id,
@@ -198,6 +210,7 @@ class TemplateColumnRepository:
                 {
                     "rule_id": assignment.id,
                     "Header rule": entries,
+                    "group": assignment.group,
                 }
             )
         return serialized or None
@@ -205,12 +218,12 @@ class TemplateColumnRepository:
     @staticmethod
     def _deserialize_rule_headers(
         raw_headers: Any,
-    ) -> tuple[dict[int, tuple[str, ...]], tuple[str, ...] | None]:
+    ) -> tuple[dict[int, dict[str, Any] | tuple[str, ...]], tuple[str, ...] | None]:
         if not raw_headers:
             return {}, None
 
         fallback: tuple[str, ...] | None = None
-        headers_map: dict[int, tuple[str, ...]] = {}
+        headers_map: dict[int, dict[str, Any] | tuple[str, ...]] = {}
 
         if isinstance(raw_headers, list):
             # Handle legacy storage of a flat list of headers
@@ -238,7 +251,15 @@ class TemplateColumnRepository:
                     continue
                 normalized = [value.strip() for value in candidates if value and value.strip()]
                 if normalized:
-                    headers_map[rule_id] = tuple(normalized)
+                    raw_group = entry.get("group")
+                    try:
+                        group = int(raw_group) if raw_group is not None else None
+                    except (TypeError, ValueError):
+                        group = None
+                    headers_map[rule_id] = {
+                        "headers": tuple(normalized),
+                        "group": group if group and group > 0 else None,
+                    }
             return headers_map, None
 
         if isinstance(raw_headers, dict):

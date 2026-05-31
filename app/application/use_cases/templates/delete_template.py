@@ -10,6 +10,7 @@ from app.infrastructure.repositories import (
     DigitalFileRepository,
     RuleRepository,
     TemplateRepository,
+    TemplateUserAccessRepository,
 )
 from app.utils import now_in_app_timezone
 
@@ -31,8 +32,10 @@ def delete_template(
     }
 
     digital_file_repository = DigitalFileRepository(session)
+    template_user_access_repository = TemplateUserAccessRepository(session)
     existing_digital_file = digital_file_repository.get_by_template_id(template.id)
 
+    template_user_access_repository.delete_by_template_id(template.id)
     repository.delete(template_id, deleted_by=deleted_by)
     if affected_rule_ids:
         rule_repository.refresh_statuses(affected_rule_ids)

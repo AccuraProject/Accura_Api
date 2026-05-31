@@ -13,6 +13,7 @@ class TemplateColumnRule:
 
     id: int
     headers: tuple[str, ...] | None = None
+    group: int | None = None
 
     def normalized_headers(self) -> tuple[str, ...] | None:
         """Return headers ensuring empty collections become ``None``."""

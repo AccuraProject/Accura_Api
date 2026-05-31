@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import math
 import re
 import tempfile
@@ -15,9 +16,10 @@ from io import BytesIO, StringIO
 from pathlib import Path
 from difflib import SequenceMatcher
 from functools import lru_cache
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Callable
 from uuid import uuid4
-from sqlalchemy import MetaData, Table, insert, select
+from sqlalchemy import Boolean, Date, DateTime, Float, Integer, MetaData, Numeric, Table, insert, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -57,6 +59,8 @@ _REPORT_PREFIX = "Reports"
 _EXCEL_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _CSV_CONTENT_TYPE = "text/csv"
 _DOWNLOAD_DIRECTORY = Path(tempfile.gettempdir()) / "accura_api_downloads"
+_GROUPED_HEADER_RULE_TYPES = {"lista compleja", "lista completa", "dependencia"}
+logger = logging.getLogger(__name__)
 
 
 def _sanitize_filename(name: str) -> str:
@@ -188,6 +192,7 @@ def process_template_load(
 ) -> Load:
     """Execute the validation flow for an existing load."""
 
+    started_processing = perf_counter()
     load_repo = LoadRepository(session)
     load = load_repo.get(load_id)
     if load is None:
@@ -211,13 +216,49 @@ def process_template_load(
         raise ValueError("La plantilla no tiene columnas activas para importar")
 
     try:
+        logger.info(
+            "Load %s started for file '%s' (%s bytes) on template '%s'",
+            load_id,
+            filename,
+            len(file_bytes),
+            template.table_name,
+        )
+        stage_started = perf_counter()
         dataframe = _read_source_file(file_bytes, suffix)
+        logger.info(
+            "Load %s read source file in %.3fs",
+            load_id,
+            perf_counter() - stage_started,
+        )
+
+        stage_started = perf_counter()
         dataframe = _normalize_dataframe(dataframe)
         _ensure_dataframe_has_rows(dataframe)
         _validate_headers(dataframe, columns)
+        logger.info(
+            "Load %s normalized data and validated headers in %.3fs",
+            load_id,
+            perf_counter() - stage_started,
+        )
 
+        stage_started = perf_counter()
         rules = _load_rules(session, columns)
+        logger.info(
+            "Load %s loaded %s active rules in %.3fs",
+            load_id,
+            len(rules),
+            perf_counter() - stage_started,
+        )
+
+        stage_started = perf_counter()
         validated_df, row_is_valid = _validate_dataframe(dataframe, columns, rules)
+        logger.info(
+            "Load %s validated %s rows across %s columns in %.3fs",
+            load_id,
+            len(validated_df.index),
+            len(columns),
+            perf_counter() - stage_started,
+        )
 
         operation_number = load.id or 0
         if not operation_number:
@@ -226,6 +267,7 @@ def process_template_load(
             column.name: derive_column_identifier(column.name) for column in columns
         }
 
+        stage_started = perf_counter()
         processed_rows = _persist_rows(
             validated_df,
             row_is_valid,
@@ -233,7 +275,15 @@ def process_template_load(
             operation_number=operation_number,
             column_identifier_map=identifier_map,
         )
+        logger.info(
+            "Load %s persisted %s rows to temporary table '%s' in %.3fs",
+            load_id,
+            len(validated_df.index),
+            template.table_name,
+            perf_counter() - stage_started,
+        )
 
+        stage_started = perf_counter()
         report_df = _prepare_report_dataframe(
             validated_df, operation_number=operation_number
         )
@@ -249,6 +299,11 @@ def process_template_load(
             source_df,
             template,
             suffix,
+        )
+        logger.info(
+            "Load %s generated report artifacts in %.3fs",
+            load_id,
+            perf_counter() - stage_started,
         )
 
         total_rows = len(validated_df.index)
@@ -288,6 +343,11 @@ def process_template_load(
         )
         notify_load_validated_success(
             session, load=load, template=template, user=user
+        )
+        logger.info(
+            "Load %s finished end-to-end in %.3fs",
+            load_id,
+            perf_counter() - started_processing,
         )
     except Exception as exc:  # pragma: no cover - defensive path
         failed_load = _mark_load_as_failed(load_repo, load, str(exc))
@@ -602,12 +662,7 @@ def _load_rules(
     if not rule_ids:
         return {}
     repository = RuleRepository(session)
-    rules: dict[int, dict[str, Any] | list[Any]] = {}
-    for rule_id in rule_ids:
-        rule = repository.get(rule_id)
-        if rule and rule.is_active:
-            rules[rule_id] = rule.rule
-    return rules
+    return repository.get_active_map(tuple(rule_ids))
 
 
 def _validate_dataframe(
@@ -624,37 +679,34 @@ def _validate_dataframe(
 
     normalized_column_lookup: dict[str, str] = {}
     column_token_lookup: dict[str, tuple[str, ...]] = {}
-    rule_header_lookup: dict[int, dict[str, str]] = {}
+    rule_header_lookup = _build_grouped_rule_header_lookup(columns, rules)
 
     for column in columns:
         normalized_name = _normalize_type_label(column.name)
         if normalized_name and normalized_name not in normalized_column_lookup:
             normalized_column_lookup[normalized_name] = column.name
         column_token_lookup[column.name] = _tokenize_label(column.name)
-        for assignment in column.rules:
-            if not assignment.headers:
-                continue
-            headers_for_rule = rule_header_lookup.setdefault(assignment.id, {})
-            for header in assignment.headers:
-                normalized_header = _normalize_type_label(header)
-                if normalized_header and normalized_header not in headers_for_rule:
-                    headers_for_rule[normalized_header] = column.name
+        if column.name not in df.columns:
+            df[column.name] = pd.Series([None] * len(df.index), dtype=object)
+
+    row_snapshots = df.to_dict(orient="records")
 
     for column in columns:
         normalized_type = _normalize_type_label(column.data_type)
         parser = _TYPE_PARSERS.get(normalized_type)
         column_rule_definitions = [
-            (rules[rule_id], rule_header_lookup.get(rule_id, {}))
-            for rule_id in column.rule_ids
-            if rule_id in rules
+            (
+                rules[assignment.id],
+                rule_header_lookup.get((column.name, assignment.id), {}),
+            )
+            for assignment in column.rules
+            if assignment.id in rules
         ]
         if parser is None and not column_rule_definitions:
             raise ValueError(
                 f"Tipo de dato desconocido para la columna '{column.name}'"
             )
 
-        if column.name not in df.columns:
-            df[column.name] = pd.Series([None] * len(df.index), dtype=object)
         series = df[column.name]
         if column_rule_definitions:
             for rule_definition, _rule_headers in column_rule_definitions:
@@ -678,7 +730,7 @@ def _validate_dataframe(
         for idx, raw_value in enumerate(series.tolist()):
             normalized_value = _normalize_cell_value(raw_value)
             df.at[idx, column.name] = normalized_value
-            row_snapshot = df.iloc[idx].to_dict()
+            row_snapshot = row_snapshots[idx]
             row_snapshot[column.name] = normalized_value
 
             column_errors: list[str] = []
@@ -718,6 +770,7 @@ def _validate_dataframe(
                 row_is_valid[idx] = False
             else:
                 df.at[idx, column.name] = converted_value
+                row_snapshot[column.name] = converted_value
 
     if duplicate_rules:
         _apply_duplicate_rules(df, duplicate_rules, observations, row_is_valid)
@@ -855,15 +908,62 @@ def _persist_rows(
 
     metadata = MetaData()
     table = Table(table_name, metadata, autoload_with=engine)
+    sanitized_records: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        is_valid = row_is_valid[index] if index < len(row_is_valid) else False
+        sanitized_records.append(
+            _sanitize_record_for_insert(record, table=table, row_is_valid=is_valid)
+        )
     try:
         with engine.begin() as connection:
-            connection.execute(insert(table), records)
+            connection.execute(insert(table), sanitized_records)
     except SQLAlchemyError as exc:  # pragma: no cover - defensive passthrough
         raise RuntimeError(
             f"No se pudo insertar la información validada en la tabla '{table_name}'"
         ) from exc
 
     return sum(1 for flag in row_is_valid if flag)
+
+
+def _sanitize_record_for_insert(
+    record: Mapping[str, Any], *, table: Table, row_is_valid: bool
+) -> dict[str, Any]:
+    sanitized = dict(record)
+    if row_is_valid:
+        return sanitized
+
+    for key, value in list(sanitized.items()):
+        if key not in table.c:
+            continue
+        if key in {"id", "numero_operacion", "status", "observaciones"}:
+            continue
+        sanitized[key] = _coerce_value_for_column(value, table.c[key].type)
+    return sanitized
+
+
+def _coerce_value_for_column(value: Any, column_type: Any) -> Any:
+    if value is None:
+        return None
+
+    parser: Callable[[Any], tuple[Any, str | None]] | None = None
+    if isinstance(column_type, Integer):
+        parser = _parse_integer
+    elif isinstance(column_type, (Float, Numeric)):
+        parser = _parse_float
+    elif isinstance(column_type, Boolean):
+        parser = _parse_boolean
+    elif isinstance(column_type, DateTime):
+        parser = _parse_datetime
+    elif isinstance(column_type, Date):
+        parser = _parse_date
+
+    if parser is None:
+        return value
+
+    parsed_value, parse_error = parser(value)
+    if parse_error:
+        return None
+    return parsed_value
 
 
 def _generate_report(
@@ -2408,6 +2508,51 @@ def _validate_dependency_rule(
                 return True
         return False
 
+    def _config_belongs_to_current_column(
+        raw_label: str, config: Mapping[str, Any]
+    ) -> bool:
+        """Infer whether a direct dependency config should validate this column.
+
+        Prefer explicit header mappings first. If we cannot map the dependency
+        subtype (`Documento`, `Texto`, etc.) to the current column with enough
+        confidence, skip the validator instead of applying it to the wrong
+        field.
+        """
+
+        matched_current = False
+        matched_other = False
+        normalized_raw_label = _normalize_type_label(raw_label)
+        raw_headers = _candidate_headers(raw_label, normalized_raw_label)
+
+        if _targets_field(raw_headers, normalized_column_label, column_name):
+            matched_current = True
+        elif any(header in row_context and header != column_name for header in raw_headers):
+            matched_other = True
+
+        for param_key in config:
+            if not isinstance(param_key, str) or not param_key.strip():
+                continue
+
+            normalized_param = _normalize_type_label(param_key)
+            param_headers = _candidate_headers(param_key, normalized_param)
+
+            if _targets_field(
+                param_headers,
+                normalized_column_label,
+                column_name,
+            ):
+                matched_current = True
+                continue
+
+            if any(header in row_context and header != column_name for header in param_headers):
+                matched_other = True
+
+        if matched_current:
+            return True
+        if matched_other:
+            return False
+        return False
+
     for entry in specific_rules:
         if not isinstance(entry, Mapping) or len(entry) < 2:
             accumulated_errors.append(
@@ -2513,7 +2658,7 @@ def _validate_dependency_rule(
                 # configuración contiene sus parámetros, aplicamos ese validador
                 # sobre la columna actual aunque la clave no coincida con el
                 # nombre visible de la columna.
-                if normalized_column_label != normalized_dependent_name:
+                if _config_belongs_to_current_column(raw_key, config):
                     validators.append((raw_key, handler, config))
                 continue
 
@@ -2859,6 +3004,96 @@ def _extract_allowed_values(rule_config: Mapping[str, Any]) -> list[Any]:
         if isinstance(values, list):
             return values
     return []
+
+
+def _build_grouped_rule_header_lookup(
+    columns: Sequence[TemplateColumn],
+    rules: Mapping[int, dict[str, Any] | list[Any]],
+) -> dict[tuple[str, int], dict[str, str]]:
+    grouped_lookup: dict[tuple[str, int], dict[str, str]] = {}
+    occurrences_by_rule: dict[int, list[tuple[str, int | None, tuple[str, ...]]]] = {}
+    expected_headers_by_rule: dict[int, set[str]] = {}
+
+    for column in columns:
+        for assignment in column.rules:
+            if assignment.id not in rules or not assignment.headers:
+                continue
+
+            rule_type = _extract_validation_rule_type(rules[assignment.id])
+            if rule_type not in _GROUPED_HEADER_RULE_TYPES:
+                continue
+
+            normalized_headers = tuple(
+                normalized_header
+                for header in assignment.headers
+                for normalized_header in [_normalize_type_label(header)]
+                if normalized_header
+            )
+            if not normalized_headers:
+                continue
+
+            occurrences_by_rule.setdefault(assignment.id, []).append(
+                (column.name, assignment.group, normalized_headers)
+            )
+            expected_headers_by_rule.setdefault(assignment.id, set()).update(
+                normalized_headers
+            )
+
+    for rule_id, occurrences in occurrences_by_rule.items():
+        grouped_occurrences: dict[int, list[tuple[str, tuple[str, ...]]]] = {}
+        all_grouped = all(group is not None and group > 0 for _, group, _ in occurrences)
+
+        if all_grouped:
+            for column_name, group, normalized_headers in occurrences:
+                grouped_occurrences.setdefault(int(group), []).append(
+                    (column_name, normalized_headers)
+                )
+        else:
+            expected_headers = expected_headers_by_rule.get(rule_id, set())
+            current_group = 1
+            pending_entries: list[tuple[str, tuple[str, ...]]] = []
+            covered_headers: set[str] = set()
+
+            for column_name, _group, normalized_headers in occurrences:
+                pending_entries.append((column_name, normalized_headers))
+                covered_headers.update(normalized_headers)
+
+                if expected_headers and expected_headers.issubset(covered_headers):
+                    grouped_occurrences[current_group] = list(pending_entries)
+                    current_group += 1
+                    pending_entries = []
+                    covered_headers = set()
+
+            if pending_entries:
+                grouped_occurrences[current_group] = list(pending_entries)
+
+        for entries in grouped_occurrences.values():
+            header_map: dict[str, str] = {}
+            for column_name, normalized_headers in entries:
+                for normalized_header in normalized_headers:
+                    header_map.setdefault(normalized_header, column_name)
+
+            for column_name, _normalized_headers in entries:
+                grouped_lookup[(column_name, rule_id)] = dict(header_map)
+
+    return grouped_lookup
+
+
+def _extract_validation_rule_type(rule_definition: dict[str, Any] | list[Any]) -> str:
+    if isinstance(rule_definition, Mapping):
+        definitions = [rule_definition]
+    elif isinstance(rule_definition, list):
+        definitions = [entry for entry in rule_definition if isinstance(entry, Mapping)]
+    else:
+        definitions = []
+
+    for definition in definitions:
+        candidate = definition.get("Tipo de dato")
+        if isinstance(candidate, str):
+            normalized_candidate = _normalize_type_label(candidate)
+            if normalized_candidate:
+                return normalized_candidate
+    return ""
 
 
 def _extract_specific_dependency_rules(
