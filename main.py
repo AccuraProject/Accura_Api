@@ -26,7 +26,8 @@ def create_app() -> FastAPI:
         allow_origins=[
             "http://localhost:4200",
             "https://accura-frontend.azurewebsites.net",
-            "https://web-accura.azurewebsites.net",# tu frontend desplegado
+            "https://web-accura.azurewebsites.net",
+            "https://web-accura-dev.azurewebsites.net", # tu frontend desplegado
         ],
         allow_credentials=True,
         allow_methods=["*"],
