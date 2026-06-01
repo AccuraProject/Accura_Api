@@ -216,7 +216,9 @@ def get_kpis(
     ) or 0
 
     successful_validations = (
-        session.query(func.count(LoadModel.id))
+        session.query(
+            func.coalesce(func.sum(LoadModel.total_rows - LoadModel.error_rows), 0)
+        )
         .join(TemplateModel, LoadModel.template_id == TemplateModel.id)
         .filter(
             LoadModel.status == LOAD_STATUS_VALIDATED_SUCCESS,
@@ -229,7 +231,7 @@ def get_kpis(
     ) or 0
 
     total_validations = (
-        session.query(func.count(LoadModel.id))
+        session.query(func.coalesce(func.sum(LoadModel.total_rows), 0))
         .join(TemplateModel, LoadModel.template_id == TemplateModel.id)
         .filter(
             LoadModel.status.in_(completed_statuses),

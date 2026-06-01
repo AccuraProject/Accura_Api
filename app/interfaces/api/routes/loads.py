@@ -174,7 +174,7 @@ def list_loads(
 def list_loads_with_template_details(
     template_id: int | None = Query(default=None, ge=1),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1),
+    limit: int | None = Query(default=None, ge=1),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> list[LoadWithTemplateSummaryRead]:

@@ -393,7 +393,7 @@ def list_loads_with_templates(
     current_user: User,
     template_id: int | None = None,
     skip: int = 0,
-    limit: int | None = 100,
+    limit: int | None = None,
 ) -> Sequence[tuple[Load, Template, User]]:
     """Return loads and their templates visible to ``current_user``."""
 
