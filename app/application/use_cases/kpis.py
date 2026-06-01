@@ -122,22 +122,38 @@ def get_kpis(
     current_start, next_month_start = _month_boundaries(now)
     previous_start = _previous_month_start(current_start)
     previous_end = current_start
+    completed_statuses = (
+        LOAD_STATUS_VALIDATED_SUCCESS,
+        LOAD_STATUS_VALIDATED_WITH_ERRORS,
+    )
 
     def _active_users_count(start: datetime, end: datetime) -> int:
         filters = [
-            UserModel.is_active == true(),
-            UserModel.last_login.isnot(None),
-            UserModel.last_login >= start,
-            UserModel.last_login < end,
+            LoadModel.user_id.isnot(None),
+            LoadModel.created_at >= start,
+            LoadModel.created_at < end,
             UserModel.deleted == false(),
+            UserModel.is_active == true(),
         ]
         if admin_user_id is not None:
-            filters.append(UserModel.created_by == admin_user_id)
-            filters.append(UserModel.id != admin_user_id)
+            filters.extend(
+                [
+                    UserModel.created_by == admin_user_id,
+                    UserModel.id != admin_user_id,
+                ]
+            )
 
         return (
-            session.query(func.count(UserModel.id))
+            session.query(func.count(func.distinct(LoadModel.user_id)))
+            .join(UserModel, LoadModel.user_id == UserModel.id)
+            .join(TemplateModel, LoadModel.template_id == TemplateModel.id)
             .filter(and_(*filters))
+            .filter(TemplateModel.deleted == false())
+            .filter(
+                TemplateModel.created_by == admin_user_id
+                if admin_user_id is not None
+                else true()
+            )
             .scalar()
         ) or 0
 
@@ -198,11 +214,6 @@ def get_kpis(
         )
         .scalar()
     ) or 0
-
-    completed_statuses = (
-        LOAD_STATUS_VALIDATED_SUCCESS,
-        LOAD_STATUS_VALIDATED_WITH_ERRORS,
-    )
 
     successful_validations = (
         session.query(func.count(LoadModel.id))
@@ -270,17 +281,34 @@ def get_kpis(
     ) or 0
 
     processed_rows = (
-        session.query(func.coalesce(func.sum(LoadModel.total_rows), 0))
+        session.query(
+            func.coalesce(func.sum(LoadModel.total_rows - LoadModel.error_rows), 0)
+        )
         .join(TemplateModel, LoadModel.template_id == TemplateModel.id)
-        .filter(and_(*loads_filters))
+        .filter(
+            LoadModel.finished_at.isnot(None),
+            LoadModel.status.in_(completed_statuses),
+            and_(*loads_filters),
+        )
         .scalar()
     ) or 0
 
     history_active_users_query = (
         session.query(func.count(func.distinct(LoadModel.user_id)))
         .join(TemplateModel, LoadModel.template_id == TemplateModel.id)
-        .filter(and_(*loads_filters))
+        .join(UserModel, LoadModel.user_id == UserModel.id)
+        .filter(
+            LoadModel.user_id.isnot(None),
+            UserModel.deleted == false(),
+            UserModel.is_active == true(),
+            and_(*loads_filters),
+        )
     )
+    if admin_user_id is not None:
+        history_active_users_query = history_active_users_query.filter(
+            UserModel.created_by == admin_user_id,
+            UserModel.id != admin_user_id,
+        )
     history_active_users = history_active_users_query.scalar() or 0
 
     effectiveness = (
